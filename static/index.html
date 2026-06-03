@@ -3,17 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PetCare Cloud Demo</title>
+    <title>PetCare Cloud — 智能宠物管理平台</title>
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
+    <!-- ===== Login ===== -->
     <section class="login-view" id="loginView">
       <div class="login-panel">
         <div class="brand-row">
           <div class="brand-mark">PC</div>
           <div>
             <h1>PetCare Cloud</h1>
-            <p>多宠物智能管理平台</p>
+            <p>多宠物 · 智能管理 · LLM 驱动</p>
           </div>
         </div>
         <form id="loginForm" class="stack">
@@ -27,9 +28,11 @@
           </label>
           <button type="submit" class="primary-action">登录演示系统</button>
         </form>
+        <p class="login-hint">演示账号：demo / 123456</p>
       </div>
     </section>
 
+    <!-- ===== App Shell ===== -->
     <div class="app-shell hidden" id="appShell">
       <aside class="sidebar">
         <div class="brand-row compact">
@@ -40,17 +43,23 @@
           </div>
         </div>
         <nav class="nav-list" aria-label="主导航">
-          <button class="nav-item active" data-view="dashboard">今日待办</button>
-          <button class="nav-item" data-view="pets">宠物档案</button>
-          <button class="nav-item" data-view="chat">聊天记录</button>
-          <button class="nav-item" data-view="logs">健康日志</button>
-          <button class="nav-item" data-view="reminders">提醒管理</button>
-          <button class="nav-item" data-view="recommend">养宠推荐</button>
-          <button class="nav-item" data-view="cloud">云架构</button>
+          <button class="nav-item active" data-view="dashboard">🏠 今日待办</button>
+          <button class="nav-item" data-view="pets">🐾 宠物档案</button>
+          <button class="nav-item" data-view="chat">💬 聊天记录</button>
+          <button class="nav-item" data-view="logs">📋 健康日志</button>
+          <button class="nav-item" data-view="reminders">⏰ 提醒管理</button>
+          <button class="nav-item" data-view="recommend">✨ 养宠推荐</button>
+          <button class="nav-item" data-view="cloud">☁️ 云架构</button>
         </nav>
         <div class="sidebar-footer">
-          <span id="parserMode">LLM 状态</span>
-          <strong id="currentUser">demo</strong>
+          <div class="llm-status-row">
+            <span class="llm-dot" id="llmDot"></span>
+            <span id="parserMode">检测中…</span>
+          </div>
+          <div class="user-row">
+            <strong id="currentUser">demo</strong>
+            <button class="ghost-action small" id="llmConfigBtn" title="配置 LLM">⚙️</button>
+          </div>
         </div>
       </aside>
 
@@ -61,11 +70,12 @@
             <h2 id="viewTitle">今日待办</h2>
           </div>
           <div class="topbar-actions">
-            <button class="ghost-action" id="refreshBtn">刷新</button>
-            <button class="primary-action" id="quickChatBtn">记录一条</button>
+            <button class="ghost-action" id="refreshBtn">↻ 刷新</button>
+            <button class="primary-action" id="quickChatBtn">＋ 记录一条</button>
           </div>
         </header>
 
+        <!-- Dashboard -->
         <section class="view active" id="view-dashboard">
           <div class="metric-grid" id="metricGrid"></div>
           <div class="dashboard-grid">
@@ -86,67 +96,89 @@
           </div>
         </section>
 
+        <!-- Pets -->
         <section class="view" id="view-pets">
           <div class="two-column">
             <section class="panel">
               <div class="panel-title">
-                <h3>新增宠物</h3>
-                <span>Pet</span>
+                <h3 id="petFormTitle">新增宠物</h3>
+                <span>Pet Profile</span>
               </div>
               <form id="petForm" class="form-grid">
-                <label>名称<input name="name" placeholder="例如：小橘" required /></label>
-                <label>种类<input name="species" placeholder="猫 / 狗" required /></label>
-                <label>品种<input name="breed" placeholder="中华田园猫" /></label>
-                <label>生日<input name="birthday" type="date" /></label>
-                <label>体重 kg<input name="weight" type="number" step="0.1" min="0" /></label>
-                <label class="full">备注<textarea name="notes" rows="3" placeholder="饮食习惯、疫苗、性格等"></textarea></label>
-                <button class="primary-action full" type="submit">保存宠物档案</button>
+                <input type="hidden" id="editingPetId" value="" />
+                <label>名称 *<input name="name" id="petName" placeholder="例如：小橘" required /></label>
+                <label>种类 *
+                  <select name="species" id="petSpecies">
+                    <option>猫</option><option>狗</option><option>兔子</option>
+                    <option>仓鼠</option><option>龙猫</option><option>鹦鹉</option>
+                    <option>鱼</option><option>乌龟</option><option>其他</option>
+                  </select>
+                </label>
+                <label>品种<input name="breed" id="petBreed" placeholder="中华田园猫" /></label>
+                <label>生日<input name="birthday" id="petBirthday" type="date" /></label>
+                <label>体重 kg<input name="weight" id="petWeight" type="number" step="0.1" min="0" /></label>
+                <label class="full">备注<textarea name="notes" id="petNotes" rows="2" placeholder="饮食习惯、疫苗、性格等"></textarea></label>
+                <button class="primary-action" type="submit" id="petSubmitBtn">保存宠物档案</button>
+                <button class="ghost-action" type="button" id="petCancelBtn" style="display:none">取消编辑</button>
               </form>
             </section>
             <section class="pet-grid" id="petGrid"></section>
           </div>
         </section>
 
+        <!-- Chat -->
         <section class="view" id="view-chat">
           <div class="chat-layout">
             <section class="panel chat-panel">
               <div class="sample-row">
-                <button class="chip" data-sample="小橘今天晚上吐了一次，没怎么吃饭，明天早上提醒我观察一下">小橘呕吐观察</button>
-                <button class="chip" data-sample="豆豆今晚八点吃了药，明晚还要再吃一次">豆豆用药提醒</button>
+                <button class="chip" data-sample="小橘今天晚上吐了一次，没怎么吃饭，明天早上提醒我观察一下">小橘呕吐</button>
+                <button class="chip" data-sample="豆豆今晚八点吃了药，明晚还要再吃一次">豆豆用药</button>
                 <button class="chip" data-sample="小橘今天吃了半罐湿粮，喝水正常">饮食记录</button>
+                <button class="chip" data-sample="豆豆今天做了体内驱虫，下个月记得再来一次">驱虫记录</button>
               </div>
-              <div class="chat-stream" id="chatStream"></div>
+              <div class="chat-stream" id="chatStream">
+                <div class="empty">暂无聊天记录，试试点击上方示例或输入宠物日常</div>
+              </div>
               <form id="chatForm" class="chat-input">
-                <input id="chatInput" placeholder="像聊天一样输入宠物日常" autocomplete="off" />
-                <button class="primary-action" type="submit">发送</button>
+                <input id="chatInput" placeholder="像发微信一样记录宠物日常…" autocomplete="off" />
+                <button class="ghost-action voice-btn" type="button" id="voiceBtn" title="语音输入">🎤</button>
+                <button class="primary-action" type="submit" id="chatSendBtn">发送</button>
               </form>
             </section>
             <section class="panel parse-panel">
               <div class="panel-title">
                 <h3>结构化解析结果</h3>
-                <span>JSON</span>
+                <span id="parserBadge">rule</span>
               </div>
-              <pre id="parseJson">{}</pre>
+              <pre id="parseJson">{
+  "提示": "发送一条消息后，LLM/规则解析结果将显示在这里"
+}</pre>
             </section>
           </div>
         </section>
 
+        <!-- Logs -->
         <section class="view" id="view-logs">
           <section class="panel">
             <div class="panel-title">
               <h3>健康日志</h3>
-              <span>HealthLog</span>
+              <div class="filter-row">
+                <select id="logPetFilter"><option value="">全部宠物</option></select>
+                <select id="logTypeFilter">
+                  <option value="">全部类型</option>
+                  <option value="health">健康</option>
+                  <option value="medicine">用药</option>
+                  <option value="diet">饮食</option>
+                  <option value="vaccine">疫苗</option>
+                  <option value="deworm">驱虫</option>
+                  <option value="diary">日常</option>
+                </select>
+              </div>
             </div>
             <div class="table-wrap">
               <table>
                 <thead>
-                  <tr>
-                    <th>日期</th>
-                    <th>宠物</th>
-                    <th>类型</th>
-                    <th>级别</th>
-                    <th>摘要</th>
-                  </tr>
+                  <tr><th>日期</th><th>宠物</th><th>类型</th><th>级别</th><th>摘要</th></tr>
                 </thead>
                 <tbody id="logTable"></tbody>
               </table>
@@ -154,16 +186,34 @@
           </section>
         </section>
 
+        <!-- Reminders -->
         <section class="view" id="view-reminders">
-          <section class="panel">
-            <div class="panel-title">
-              <h3>提醒任务</h3>
-              <span>Reminder</span>
-            </div>
-            <div class="list" id="reminderList"></div>
-          </section>
+          <div class="two-column">
+            <section class="panel">
+              <div class="panel-title">
+                <h3>新建提醒</h3>
+                <span>Manual</span>
+              </div>
+              <form id="reminderForm" class="form-grid">
+                <label class="full">提醒标题 *<input name="title" id="reminderTitle" placeholder="例如：给小橘打疫苗" required /></label>
+                <label>选择宠物 *
+                  <select name="pet_id" id="reminderPetId"></select>
+                </label>
+                <label>提醒时间 *<input name="reminder_time" id="reminderTime" type="datetime-local" /></label>
+                <button class="primary-action full" type="submit">创建提醒</button>
+              </form>
+            </section>
+            <section class="panel">
+              <div class="panel-title">
+                <h3>提醒任务</h3>
+                <span id="reminderCount">0 条</span>
+              </div>
+              <div class="list" id="reminderList"></div>
+            </section>
+          </div>
         </section>
 
+        <!-- Recommend -->
         <section class="view" id="view-recommend">
           <div class="two-column">
             <section class="panel">
@@ -174,58 +224,48 @@
               <form id="recommendForm" class="form-grid">
                 <label>居住空间
                   <select name="housing">
-                    <option>小户型公寓</option>
-                    <option>普通住宅</option>
-                    <option>有户外空间</option>
+                    <option>小户型公寓</option><option>普通住宅</option><option>有户外空间</option>
                   </select>
                 </label>
                 <label>陪伴时间
                   <select name="time">
-                    <option>工作日较少</option>
-                    <option>每天 1-2 小时</option>
-                    <option>每天有较多时间</option>
+                    <option>工作日较少</option><option>每天 1-2 小时</option><option>每天有较多时间</option>
                   </select>
                 </label>
                 <label>预算
                   <select name="budget">
-                    <option>低预算</option>
-                    <option>中等预算</option>
-                    <option>预算充足</option>
+                    <option>低预算</option><option>中等预算</option><option>预算充足</option>
                   </select>
                 </label>
-                <label>经验
+                <label>养宠经验
                   <select name="experience">
-                    <option>新手</option>
-                    <option>有养猫经验</option>
-                    <option>有养狗经验</option>
+                    <option>新手</option><option>有养猫经验</option><option>有养狗经验</option>
                   </select>
                 </label>
                 <label>过敏情况
                   <select name="allergies">
-                    <option>无明显过敏</option>
-                    <option>可能对毛发过敏</option>
+                    <option>无明显过敏</option><option>可能对毛发过敏</option>
                   </select>
                 </label>
                 <label>互动偏好
                   <select name="preference">
-                    <option>安静陪伴</option>
-                    <option>户外互动</option>
-                    <option>观赏为主</option>
+                    <option>安静陪伴</option><option>户外互动</option><option>观赏为主</option>
                   </select>
                 </label>
-                <button class="primary-action full" type="submit">生成推荐</button>
+                <button class="primary-action full" type="submit" id="recommendBtn">生成推荐</button>
               </form>
             </section>
             <section class="panel">
               <div class="panel-title">
                 <h3>推荐结果</h3>
-                <span>Recommendation</span>
+                <span id="recommendSource">-</span>
               </div>
-              <div class="list" id="recommendResult"></div>
+              <div id="recommendResult"><div class="empty">填写问卷后点击"生成推荐"</div></div>
             </section>
           </div>
         </section>
 
+        <!-- Cloud -->
         <section class="view" id="view-cloud">
           <div class="cloud-layout">
             <section class="panel">
@@ -237,22 +277,90 @@
             </section>
             <section class="panel">
               <div class="panel-title">
-                <h3>核心链路</h3>
+                <h3>系统架构链路</h3>
                 <span>Architecture</span>
               </div>
-              <div class="flow">
-                <div>浏览器 / 移动端</div>
-                <div>后端 API</div>
-                <div>数据库</div>
-                <div>对象存储</div>
-                <div>AI Worker</div>
-                <div>提醒任务</div>
+              <div class="flow" id="archFlow">
+                <div class="flow-node">
+                  <div class="flow-icon">🌐</div>
+                  <strong>浏览器客户端</strong>
+                  <span>Vue/React SPA</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                  <div class="flow-icon">⚙️</div>
+                  <strong>ECS 应用层</strong>
+                  <span>FastAPI / 标准库</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                  <div class="flow-icon">🗄️</div>
+                  <strong>云数据库</strong>
+                  <span>SQLite → RDS</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                  <div class="flow-icon">🤖</div>
+                  <strong>LLM 解析层</strong>
+                  <span>OpenAI / 通义千问</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                  <div class="flow-icon">📦</div>
+                  <strong>对象存储</strong>
+                  <span>OBS / 本地</span>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                  <div class="flow-icon">⏰</div>
+                  <strong>消息队列</strong>
+                  <span>RocketMQ 就绪</span>
+                </div>
+              </div>
+              <div class="cloud-note">
+                <strong>核心特点：</strong>用户自然语言输入
+                → LLM 解析提取宠物名/事件/症状/提醒需求
+                → 结构化写入数据库
+                → 自动生成待办提醒
               </div>
             </section>
           </div>
         </section>
       </main>
     </div>
+
+    <!-- ===== LLM Config Modal ===== -->
+    <div class="modal-overlay hidden" id="llmModal">
+      <div class="modal-box">
+        <div class="modal-header">
+          <h3>⚙️ LLM 配置</h3>
+          <button class="modal-close" id="llmModalClose">✕</button>
+        </div>
+        <div class="modal-body stack">
+          <p class="config-hint">
+            配置 OpenAI 兼容的 API 后，将启用 AI 智能解析和个性化宠物推荐。<br>
+            不配置也可正常使用（规则引擎）。
+          </p>
+          <label>API Key
+            <input type="password" id="llmApiKey" placeholder="sk-…" autocomplete="off" />
+          </label>
+          <label>Base URL
+            <input type="text" id="llmBaseUrl" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label>模型名称
+            <input type="text" id="llmModel" placeholder="gpt-4o-mini" />
+          </label>
+          <div class="llm-test-result hidden" id="llmTestResult"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="ghost-action" id="llmModalClose2">取消</button>
+          <button class="primary-action" id="llmSaveBtn">保存并测试</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Toast ===== -->
+    <div class="toast hidden" id="toast"></div>
 
     <script src="/static/app.js"></script>
   </body>

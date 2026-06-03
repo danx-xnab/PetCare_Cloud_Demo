@@ -34,6 +34,9 @@ DB_PATH = Path(os.getenv("PETCARE_DB", DATA_DIR / "petcare.db"))
 
 DEFAULT_USER_ID = "user-demo"
 
+# Runtime LLM configuration (overrides env vars; set via /api/llm/config)
+_runtime_llm_config: dict[str, str] = {}
+
 
 def now_iso() -> str:
     return datetime.now().replace(microsecond=0).isoformat()
@@ -41,6 +44,22 @@ def now_iso() -> str:
 
 def json_dumps(data: Any) -> bytes:
     return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def get_llm_config() -> tuple[str, str, str]:
+    """Return (api_key, base_url, model) from runtime config or env vars."""
+    key = _runtime_llm_config.get("api_key") or os.getenv("OPENAI_API_KEY", "")
+    url = (
+        _runtime_llm_config.get("base_url")
+        or os.getenv("PETCARE_LLM_URL")
+        or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    )
+    model = (
+        _runtime_llm_config.get("model")
+        or os.getenv("PETCARE_LLM_MODEL")
+        or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    )
+    return key, url, model
 
 
 def connect() -> sqlite3.Connection:
@@ -172,23 +191,44 @@ def seed_demo_data(conn: sqlite3.Connection) -> None:
             ts,
         ),
     )
-    conn.execute(
-        """
-        INSERT INTO health_logs
-        (id, pet_id, date, record_type, symptoms, summary, severity, source_message_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "log-seed-diet",
-            "pet-doudou",
-            datetime.now().date().isoformat(),
-            "diet",
-            "[]",
-            "豆豆早餐吃了少量犬粮，饮水正常。",
-            "low",
-            "",
-            ts,
-        ),
+    seed_logs = [
+        ("log-s1", "pet-doudou", datetime.now().date().isoformat(),
+         "diet",    "[]",
+         "豆豆早餐吃了少量犬粮，饮水正常。", "low",  "", ts),
+        ("log-s2", "pet-xiaoju", datetime.now().date().isoformat(),
+         "health",  '["食欲下降","呕吐"]',
+         "小橘出现食欲下降、呕吐，建议继续观察饮食、精神和排便变化。", "medium", "", ts),
+        ("log-s3", "pet-doudou", (datetime.now() - timedelta(days=1)).date().isoformat(),
+         "medicine","[]",
+         "豆豆昨天按时服用了皮肤消炎药，状态稳定。", "low",  "", ts),
+        ("log-s4", "pet-xiaoju", (datetime.now() - timedelta(days=2)).date().isoformat(),
+         "vaccine", "[]",
+         "小橘完成三联疫苗第一针接种，一年后需补打。", "low",  "", ts),
+        ("log-s5", "pet-doudou", (datetime.now() - timedelta(days=3)).date().isoformat(),
+         "deworm",  "[]",
+         "豆豆完成体内驱虫，下个月安排体外驱虫。", "low",  "", ts),
+    ]
+    conn.executemany(
+        """INSERT INTO health_logs
+           (id, pet_id, date, record_type, symptoms, summary, severity, source_message_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        seed_logs,
+    )
+    seed_reminders_extra = [
+        ("rem-seed-med", "pet-doudou",
+         "给豆豆喂皮肤消炎药",
+         (datetime.now() + timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0).isoformat(),
+         "daily", "pending", "", ts),
+        ("rem-seed-deworm", "pet-doudou",
+         "豆豆体外驱虫",
+         (datetime.now() + timedelta(days=30)).replace(hour=9, minute=0, second=0, microsecond=0).isoformat(),
+         "once", "pending", "", ts),
+    ]
+    conn.executemany(
+        """INSERT INTO reminders
+           (id, pet_id, title, reminder_time, repeat_rule, status, source_message_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        seed_reminders_extra,
     )
 
 
@@ -220,6 +260,10 @@ def get_state() -> dict[str, Any]:
         if item["status"] == "pending" and item["reminder_time"][:10] <= today
     ]
     abnormal_logs = [item for item in logs if item.get("severity") in {"medium", "high"}]
+
+    api_key, _, model = get_llm_config()
+    llm_desc = f"LLM 已接入 ({model})" if api_key else "规则解析（未配置 LLM）"
+
     return {
         "user": {"id": DEFAULT_USER_ID, "username": "demo"},
         "pets": pets,
@@ -233,60 +277,70 @@ def get_state() -> dict[str, Any]:
             "abnormal_count": len(abnormal_logs),
         },
         "cloud": {
-            "ecs": "online",
-            "database": "sqlite-demo / cloud-ready",
-            "object_storage": "local uploads / OBS-ready",
-            "llm": "OpenAI-compatible API" if os.getenv("OPENAI_API_KEY") else "rule parser fallback",
-            "worker": "sync demo / RocketMQ-ready",
+            "ecs": "ECS 云服务器（在线）",
+            "database": "SQLite / RDS 云数据库",
+            "object_storage": "本地存储 / OBS 对象存储",
+            "llm": llm_desc,
+            "worker": "同步处理 / RocketMQ 异步就绪",
         },
+        "llm_available": bool(api_key),
     }
 
 
-def try_llm_parse(content: str, pets: list[dict[str, Any]]) -> dict[str, Any] | None:
-    api_key = os.getenv("OPENAI_API_KEY")
+def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
+    """Call the configured LLM API. Returns response text or None on failure."""
+    api_key, base_url, model = get_llm_config()
     if not api_key:
         return None
-    base_url = os.getenv("PETCARE_LLM_URL") or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    if not base_url.endswith("/chat/completions"):
-        base_url = base_url.rstrip("/") + "/chat/completions"
-    model = os.getenv("PETCARE_LLM_MODEL", os.getenv("OPENAI_MODEL", "gpt-4.1-mini"))
-    pet_names = [pet["name"] for pet in pets]
+    url = base_url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = url + "/chat/completions"
     payload = {
         "model": model,
-        "temperature": 0.1,
+        "temperature": temperature,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "你是 PetCare Cloud 的宠物记录解析器。"
-                    "只输出 JSON，不输出 Markdown。字段必须包含："
-                    "pet_name, record_type, event_time, summary, symptoms, severity, "
-                    "need_reminder, reminder, reply。record_type 可为 health, medicine, diet, vaccine, deworm, diary。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"已有宠物：{pet_names}\n用户输入：{content}",
-            },
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
     }
     req = urllib.request.Request(
-        base_url,
+        url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             body = json.loads(response.read().decode("utf-8"))
-        text = body["choices"][0]["message"]["content"].strip()
-        match = re.search(r"\{.*\}", text, flags=re.S)
+        return body["choices"][0]["message"]["content"].strip()
+    except (OSError, urllib.error.URLError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def try_llm_parse(content: str, pets: list[dict[str, Any]]) -> dict[str, Any] | None:
+    pet_names = [pet["name"] for pet in pets]
+    system = (
+        "你是 PetCare Cloud 的宠物记录解析器。"
+        "只输出 JSON，不输出 Markdown 代码块。字段必须包含："
+        "pet_name（字符串）, record_type（health/medicine/diet/vaccine/deworm/diary之一）, "
+        "event_time（字符串）, summary（字符串）, symptoms（字符串数组）, severity（low/medium/high之一）, "
+        "need_reminder（布尔）, reminder（含 title 和 time 的对象）, reply（字符串，友好回复）。"
+    )
+    user = f"已有宠物：{pet_names}\n用户输入：{content}"
+    text = call_llm(system, user)
+    if not text:
+        return None
+    try:
+        # Strip markdown code fences if present
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.M)
+        text = re.sub(r"```\s*$", "", text, flags=re.M)
+        match = re.search(r"\{.*\}", text.strip(), flags=re.S)
         if not match:
             return None
         parsed = json.loads(match.group(0))
         parsed["_parser"] = "llm"
         return normalize_parse(parsed, content, pets)
-    except (OSError, urllib.error.URLError, KeyError, json.JSONDecodeError):
+    except (json.JSONDecodeError, KeyError):
         return None
 
 
@@ -420,15 +474,27 @@ def detect_reminder_phrase(content: str) -> str:
 
 
 def should_create_reminder(content: str, record_type: str, symptoms: list[str]) -> bool:
-    if "提醒" in content or "还要" in content or "再吃一次" in content or "复查" in content:
+    trigger_words = ["提醒", "还要", "再吃一次", "复查", "再打", "再来一次", "下次", "一年后", "下个月", "下周", "明天还", "再用一次"]
+    if any(w in content for w in trigger_words):
         return True
-    return record_type in {"health", "medicine", "vaccine", "deworm"} and bool(symptoms or "药" in content)
+    # Vaccines and deworm always create a follow-up reminder
+    if record_type in {"vaccine", "deworm"}:
+        return True
+    return record_type in {"health", "medicine"} and bool(symptoms or "药" in content)
 
 
 def resolve_reminder_time(phrase: str, content: str) -> datetime:
     base = datetime.now().replace(second=0, microsecond=0)
     text = phrase + content
-    if "后天" in text:
+    if "一年后" in text or "明年" in text:
+        base += timedelta(days=365)
+    elif "半年后" in text:
+        base += timedelta(days=180)
+    elif "下个月" in text or "一个月后" in text:
+        base += timedelta(days=30)
+    elif "下周" in text or "一周后" in text:
+        base += timedelta(days=7)
+    elif "后天" in text:
         base += timedelta(days=2)
     elif "明" in text:
         base += timedelta(days=1)
@@ -584,27 +650,120 @@ def create_pet(payload: dict[str, Any]) -> dict[str, Any]:
     return {"pet": one("SELECT * FROM pets WHERE id = ?", (pet_id,)), "state": get_state()}
 
 
-def save_upload(payload: dict[str, Any]) -> dict[str, Any]:
-    data_url = payload.get("data_url", "")
-    match = re.match(r"data:(?P<mime>[-\w./+]+);base64,(?P<data>.+)", data_url)
-    if not match:
-        raise ValueError("Invalid data_url")
-    mime = payload.get("mime") or match.group("mime")
-    extension = mimetypes.guess_extension(mime) or Path(payload.get("filename", "upload.bin")).suffix or ".bin"
-    safe_name = f"{uuid.uuid4().hex}{extension}"
-    raw = base64.b64decode(match.group("data"))
-    target = UPLOAD_DIR / safe_name
-    target.write_bytes(raw)
-    url = f"/uploads/{safe_name}"
-    pet_id = payload.get("pet_id")
-    if pet_id:
-        with connect() as conn:
-            conn.execute("UPDATE pets SET avatar_url = ? WHERE id = ?", (url, pet_id))
-            conn.commit()
-    return {"url": url, "state": get_state()}
+def update_pet(pet_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    pet = one("SELECT * FROM pets WHERE id = ?", (pet_id,))
+    if not pet:
+        raise ValueError("宠物不存在")
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE pets SET name=?, species=?, breed=?, birthday=?, weight=?, notes=?
+            WHERE id=?
+            """,
+            (
+                payload.get("name", pet["name"]).strip(),
+                payload.get("species", pet["species"]).strip(),
+                payload.get("breed", pet.get("breed", "")).strip(),
+                payload.get("birthday", pet.get("birthday", "")).strip(),
+                float(payload["weight"]) if str(payload.get("weight", "")).strip() else pet.get("weight"),
+                payload.get("notes", pet.get("notes", "")).strip(),
+                pet_id,
+            ),
+        )
+        conn.commit()
+    return {"pet": one("SELECT * FROM pets WHERE id = ?", (pet_id,)), "state": get_state()}
+
+
+def delete_pet(pet_id: str) -> dict[str, Any]:
+    pet = one("SELECT * FROM pets WHERE id = ?", (pet_id,))
+    if not pet:
+        raise ValueError("宠物不存在")
+    with connect() as conn:
+        conn.execute("DELETE FROM health_logs WHERE pet_id = ?", (pet_id,))
+        conn.execute("DELETE FROM reminders WHERE pet_id = ?", (pet_id,))
+        conn.execute("DELETE FROM chat_messages WHERE pet_id = ?", (pet_id,))
+        conn.execute("DELETE FROM pets WHERE id = ?", (pet_id,))
+        conn.commit()
+    return {"state": get_state()}
+
+
+def create_reminder(payload: dict[str, Any]) -> dict[str, Any]:
+    pet_id = payload.get("pet_id", "")
+    pet = one("SELECT * FROM pets WHERE id = ?", (pet_id,))
+    if not pet:
+        raise ValueError("宠物不存在，请先选择宠物")
+    title = payload.get("title", "").strip()
+    if not title:
+        raise ValueError("提醒标题不能为空")
+    reminder_time_str = payload.get("reminder_time", "").strip()
+    if not reminder_time_str:
+        # Default to tomorrow 9am
+        reminder_time_str = (datetime.now() + timedelta(days=1)).replace(
+            hour=9, minute=0, second=0, microsecond=0
+        ).isoformat()
+    rem_id = f"rem-{uuid.uuid4().hex[:10]}"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reminders
+            (id, pet_id, title, reminder_time, repeat_rule, status, source_message_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (rem_id, pet_id, title, reminder_time_str, "once", "pending", "", now_iso()),
+        )
+        conn.commit()
+    return {"reminder": one("SELECT * FROM reminders WHERE id = ?", (rem_id,)), "state": get_state()}
+
+
+def delete_reminder(reminder_id: str) -> dict[str, Any]:
+    reminder = one("SELECT * FROM reminders WHERE id = ?", (reminder_id,))
+    if not reminder:
+        raise ValueError("提醒不存在")
+    with connect() as conn:
+        conn.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+        conn.commit()
+    return {"state": get_state()}
+
+
+def try_llm_recommend(payload: dict[str, Any]) -> dict[str, Any] | None:
+    housing = payload.get("housing", "")
+    time_budget = payload.get("time", "")
+    money = payload.get("budget", "")
+    allergies = payload.get("allergies", "")
+    experience = payload.get("experience", "")
+    preference = payload.get("preference", "")
+
+    system = (
+        "你是专业的宠物顾问。根据用户条件，推荐最多3种适合的宠物，输出 JSON，不输出 Markdown。"
+        "格式：{\"recommendations\": [{\"name\": 宠物类型, \"score\": 0-100整数, "
+        "\"reason\": 理由, \"care_plan\": 护理建议}], "
+        "\"input_summary\": 简短用户画像摘要}"
+    )
+    user = (
+        f"居住空间：{housing}；陪伴时间：{time_budget}；预算：{money}；"
+        f"过敏：{allergies}；经验：{experience}；偏好：{preference}"
+    )
+    text = call_llm(system, user, temperature=0.3)
+    if not text:
+        return None
+    try:
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.M)
+        text = re.sub(r"```\s*$", "", text, flags=re.M)
+        match = re.search(r"\{.*\}", text.strip(), flags=re.S)
+        if not match:
+            return None
+        result = json.loads(match.group(0))
+        result["llm_note"] = "由 LLM 生成个性化推荐"
+        return result
+    except (json.JSONDecodeError, KeyError):
+        return None
 
 
 def recommend_pet(payload: dict[str, Any]) -> dict[str, Any]:
+    llm_result = try_llm_recommend(payload)
+    if llm_result:
+        return llm_result
+
     housing = payload.get("housing", "")
     time_budget = payload.get("time", "")
     money = payload.get("budget", "")
@@ -652,8 +811,76 @@ def recommend_pet(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "input_summary": f"{housing}；{time_budget}；预算：{money}；偏好：{preference}",
         "recommendations": recommendations[:3],
-        "llm_note": "当前为规则版推荐，可在部署时接入 LLM 生成更个性化解释。",
+        "llm_note": "当前为规则版推荐，配置 LLM 后可生成更个性化解释。",
     }
+
+
+def summarize_pet_health(pet_id: str) -> dict[str, Any]:
+    pet = one("SELECT * FROM pets WHERE id = ?", (pet_id,))
+    if not pet:
+        raise ValueError("宠物不存在")
+    logs = rows(
+        "SELECT * FROM health_logs WHERE pet_id = ? ORDER BY created_at DESC LIMIT 20",
+        (pet_id,),
+    )
+    if not logs:
+        return {"pet_name": pet["name"], "summary": f"{pet['name']}暂无健康记录。", "suggestions": []}
+
+    # Try LLM summary
+    logs_text = "\n".join(f"[{l['date']}][{l['record_type']}] {l['summary']}" for l in logs)
+    system = (
+        "你是宠物健康助手。根据以下健康日志，用简洁中文给出近期健康小结、关注要点和护理建议。"
+        "输出 JSON：{\"summary\":\"…\",\"highlights\":[\"…\"],\"suggestions\":[\"…\"]}。不做医疗诊断。"
+    )
+    user = f"宠物：{pet['name']}\n日志：\n{logs_text}"
+    text = call_llm(system, user, temperature=0.4)
+    if text:
+        try:
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.M)
+            text = re.sub(r"```\s*$", "", text, flags=re.M)
+            m = re.search(r"\{.*\}", text.strip(), flags=re.S)
+            if m:
+                result = json.loads(m.group(0))
+                result["pet_name"] = pet["name"]
+                result["_source"] = "llm"
+                return result
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # Rule-based fallback
+    abnormal = [l for l in logs if l.get("severity") in ("medium", "high")]
+    summary = f"{pet['name']}近期共有 {len(logs)} 条记录。"
+    if abnormal:
+        summary += f"其中 {len(abnormal)} 条异常记录，建议关注。"
+    else:
+        summary += "整体状态平稳，未见明显异常。"
+    return {
+        "pet_name": pet["name"],
+        "summary": summary,
+        "highlights": [l["summary"] for l in logs[:3]],
+        "suggestions": ["保持规律喂食和饮水", "定期驱虫和疫苗", "如有持续异常及时就医"],
+        "_source": "rule",
+    }
+
+
+def save_upload(payload: dict[str, Any]) -> dict[str, Any]:
+    data_url = payload.get("data_url", "")
+    match = re.match(r"data:(?P<mime>[-\w./+]+);base64,(?P<data>.+)", data_url)
+    if not match:
+        raise ValueError("Invalid data_url")
+    mime = payload.get("mime") or match.group("mime")
+    extension = mimetypes.guess_extension(mime) or Path(payload.get("filename", "upload.bin")).suffix or ".bin"
+    safe_name = f"{uuid.uuid4().hex}{extension}"
+    raw = base64.b64decode(match.group("data"))
+    target = UPLOAD_DIR / safe_name
+    target.write_bytes(raw)
+    url = f"/uploads/{safe_name}"
+    pet_id = payload.get("pet_id")
+    if pet_id:
+        with connect() as conn:
+            conn.execute("UPDATE pets SET avatar_url = ? WHERE id = ?", (url, pet_id))
+            conn.commit()
+    return {"url": url, "state": get_state()}
 
 
 class PetCareHandler(SimpleHTTPRequestHandler):
@@ -689,6 +916,14 @@ class PetCareHandler(SimpleHTTPRequestHandler):
         path = unquote(parsed.path)
         if path == "/api/state":
             self.send_json(get_state())
+            return
+        if path == "/api/llm/status":
+            api_key, _, model = get_llm_config()
+            self.send_json({
+                "available": bool(api_key),
+                "model": model,
+                "source": "runtime" if _runtime_llm_config.get("api_key") else "env",
+            })
             return
         if path.startswith("/uploads/"):
             self.serve_file(UPLOAD_DIR / path.removeprefix("/uploads/"))
@@ -729,9 +964,26 @@ class PetCareHandler(SimpleHTTPRequestHandler):
             if path == "/api/recommend":
                 self.send_json(recommend_pet(payload), 201)
                 return
-            reminder_match = re.match(r"^/api/reminders/(?P<reminder_id>[^/]+)/complete$", path)
-            if reminder_match:
-                reminder_id = reminder_match.group("reminder_id")
+            if path == "/api/reminders":
+                self.send_json(create_reminder(payload), 201)
+                return
+            summarize_match = re.match(r"^/api/pets/(?P<id>[^/]+)/summarize$", path)
+            if summarize_match:
+                self.send_json(summarize_pet_health(summarize_match.group("id")))
+                return
+            if path == "/api/llm/config":
+                global _runtime_llm_config
+                _runtime_llm_config = {
+                    "api_key": str(payload.get("api_key", "")).strip(),
+                    "base_url": str(payload.get("base_url", "")).strip(),
+                    "model": str(payload.get("model", "")).strip(),
+                }
+                api_key, _, model = get_llm_config()
+                self.send_json({"ok": True, "available": bool(api_key), "model": model})
+                return
+            reminder_complete = re.match(r"^/api/reminders/(?P<id>[^/]+)/complete$", path)
+            if reminder_complete:
+                reminder_id = reminder_complete.group("id")
                 with connect() as conn:
                     conn.execute("UPDATE reminders SET status = 'done' WHERE id = ?", (reminder_id,))
                     conn.commit()
@@ -740,7 +992,40 @@ class PetCareHandler(SimpleHTTPRequestHandler):
             self.send_error_json("接口不存在", 404)
         except ValueError as exc:
             self.send_error_json(str(exc), 400)
-        except Exception as exc:  # pragma: no cover - demo server guardrail
+        except Exception as exc:  # pragma: no cover
+            self.send_error_json(f"服务器处理失败：{exc}", 500)
+
+    def do_PUT(self) -> None:
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            payload = self.read_json()
+            pet_match = re.match(r"^/api/pets/(?P<id>[^/]+)$", path)
+            if pet_match:
+                self.send_json(update_pet(pet_match.group("id"), payload))
+                return
+            self.send_error_json("接口不存在", 404)
+        except ValueError as exc:
+            self.send_error_json(str(exc), 400)
+        except Exception as exc:
+            self.send_error_json(f"服务器处理失败：{exc}", 500)
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            pet_match = re.match(r"^/api/pets/(?P<id>[^/]+)$", path)
+            if pet_match:
+                self.send_json(delete_pet(pet_match.group("id")))
+                return
+            rem_match = re.match(r"^/api/reminders/(?P<id>[^/]+)$", path)
+            if rem_match:
+                self.send_json(delete_reminder(rem_match.group("id")))
+                return
+            self.send_error_json("接口不存在", 404)
+        except ValueError as exc:
+            self.send_error_json(str(exc), 400)
+        except Exception as exc:
             self.send_error_json(f"服务器处理失败：{exc}", 500)
 
     def read_json(self) -> dict[str, Any]:
