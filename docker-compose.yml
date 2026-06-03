@@ -1,0 +1,14 @@
+services:
+  petcare-cloud:
+    build: .
+    container_name: petcare-cloud-demo
+    ports:
+      - "8000:8000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      PETCARE_LLM_MODEL: gpt-4.1-mini
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    restart: unless-stopped
