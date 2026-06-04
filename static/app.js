@@ -418,7 +418,35 @@ async function handleChatSubmit(event) {
 
 // ===== Voice Input =====
 
+let voiceRecognition = null;
+let voiceStopRequested = false;
+let voiceBaseText = "";
+
+function resetVoiceButton() {
+  const btn = document.getElementById("voiceBtn");
+  btn.textContent = "🎤";
+  btn.title = "语音输入";
+  btn.classList.remove("recording");
+}
+
+function stopVoice() {
+  if (!voiceRecognition) return;
+  voiceStopRequested = true;
+  const btn = document.getElementById("voiceBtn");
+  btn.title = "正在停止语音输入";
+  try {
+    voiceRecognition.stop();
+  } catch {
+    voiceRecognition.abort();
+  }
+}
+
 function startVoice() {
+  if (voiceRecognition) {
+    stopVoice();
+    return;
+  }
+
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
     showToast("当前浏览器不支持语音输入（建议使用 Chrome / Edge）", "error");
@@ -426,26 +454,54 @@ function startVoice() {
   }
   const btn = document.getElementById("voiceBtn");
   const recognition = new SpeechRecognition();
+  voiceRecognition = recognition;
+  voiceStopRequested = false;
+  voiceBaseText = document.getElementById("chatInput").value.trim();
+
   recognition.lang = "zh-CN";
-  recognition.continuous = false;
-  recognition.interimResults = false;
+  recognition.continuous = true;
+  recognition.interimResults = true;
 
   recognition.onstart = () => {
-    btn.textContent = "🔴";
-    btn.title = "录音中，说完后自动停止";
+    btn.textContent = "■";
+    btn.title = "点击停止语音输入";
+    btn.classList.add("recording");
   };
   recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript;
-    document.getElementById("chatInput").value = transcript;
+    let finalText = "";
+    let interimText = "";
+    for (let i = 0; i < e.results.length; i += 1) {
+      const transcript = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += transcript;
+      else interimText += transcript;
+    }
+    const spokenText = `${finalText}${interimText}`.trim();
+    document.getElementById("chatInput").value =
+      [voiceBaseText, spokenText].filter(Boolean).join(" ");
   };
   recognition.onerror = (e) => {
-    showToast("语音识别失败：" + e.error, "error");
+    if (e.error === "aborted" && voiceStopRequested) return;
+    const label = e.error === "no-speech" ? "没有识别到语音" : `语音识别失败：${e.error}`;
+    showToast(label, "error");
   };
   recognition.onend = () => {
-    btn.textContent = "🎤";
-    btn.title = "语音输入";
+    if (voiceRecognition === recognition) {
+      voiceRecognition = null;
+      voiceStopRequested = false;
+      voiceBaseText = "";
+      resetVoiceButton();
+    }
   };
-  recognition.start();
+
+  try {
+    recognition.start();
+  } catch (err) {
+    voiceRecognition = null;
+    voiceStopRequested = false;
+    voiceBaseText = "";
+    resetVoiceButton();
+    showToast("语音识别启动失败：" + err.message, "error");
+  }
 }
 
 // ===== Logs =====

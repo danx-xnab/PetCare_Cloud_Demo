@@ -65,8 +65,12 @@ def get_llm_config() -> tuple[str, str, str]:
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA journal_mode = TRUNCATE")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -354,6 +358,10 @@ def normalize_parse(parsed: dict[str, Any], content: str, pets: list[dict[str, A
     parsed["symptoms"] = parsed.get("symptoms") if isinstance(parsed.get("symptoms"), list) else []
     parsed["severity"] = parsed.get("severity") or "low"
     parsed["need_reminder"] = bool(parsed.get("need_reminder"))
+    if not pet:
+        parsed["pet_name"] = "未指定宠物"
+        parsed["summary"] = f"未关联宠物的聊天内容：{content}"
+        parsed["need_reminder"] = False
     reminder = parsed.get("reminder") if isinstance(parsed.get("reminder"), dict) else {}
     parsed["reminder"] = {
         "title": reminder.get("title", ""),
@@ -369,12 +377,12 @@ def normalize_parse(parsed: dict[str, Any], content: str, pets: list[dict[str, A
 def find_pet(content: str, pets: list[dict[str, Any]], preferred: str | None = None) -> dict[str, Any] | None:
     if preferred:
         for pet in pets:
-            if pet["name"] == preferred:
+            if pet["name"] == preferred and pet["name"] in content:
                 return pet
     for pet in pets:
         if pet["name"] and pet["name"] in content:
             return pet
-    return pets[0] if pets else None
+    return None
 
 
 def parse_pet_record(content: str, pets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -517,6 +525,8 @@ def resolve_reminder_time(phrase: str, content: str) -> datetime:
 
 
 def build_summary(pet_name: str, content: str, record_type: str, symptoms: list[str]) -> str:
+    if pet_name == "未指定宠物":
+        return f"未关联宠物的聊天内容：{content}"
     if record_type == "health" and symptoms:
         return f"{pet_name}出现{', '.join(symptoms)}，建议继续观察并记录饮食、精神和排便变化。"
     if record_type == "medicine":
@@ -545,6 +555,8 @@ def build_reminder_title(pet_name: str, record_type: str, symptoms: list[str], c
 
 
 def build_reply(parsed: dict[str, Any]) -> str:
+    if not parsed.get("pet_id"):
+        return "没有识别到具体宠物，已保留这条聊天消息，但未写入宠物日志。请在内容中带上宠物名称后再记录。"
     pet_name = parsed.get("pet_name", "宠物")
     type_label = {
         "health": "健康日志",

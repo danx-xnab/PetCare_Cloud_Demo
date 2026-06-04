@@ -282,6 +282,11 @@ input:focus, select:focus, textarea:focus {
   background: var(--surface); font-size: 16px;
 }
 .voice-btn:hover { border-color: var(--green); }
+.voice-btn.recording {
+  color: #fff;
+  border-color: var(--rose);
+  background: var(--rose);
+}
 
 .parse-panel pre {
   min-height: 480px; overflow: auto; margin: 0; padding: 14px;

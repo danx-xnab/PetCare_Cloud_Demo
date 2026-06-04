@@ -1,4 +1,8 @@
 data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
+data/backup-*/
 uploads/*
 !uploads/.gitkeep
 __pycache__/
