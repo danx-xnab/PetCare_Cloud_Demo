@@ -37,6 +37,12 @@ $env:PETCARE_LLM_MODEL="gpt-4.1-mini"
 python server.py --host 127.0.0.1 --port 8000
 ```
 
+后端 LLM 请求默认忽略系统代理，避免被无效的 `HTTP_PROXY` / `HTTPS_PROXY` 拦截。如果确实需要走系统代理，可额外设置：
+
+```powershell
+$env:PETCARE_USE_SYSTEM_PROXY="1"
+```
+
 模型输出被约束为固定 JSON，后端再写入 `ChatMessage`、`HealthLog` 和 `Reminder`。
 
 ## Docker 部署

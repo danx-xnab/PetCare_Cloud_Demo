@@ -36,6 +36,11 @@ DEFAULT_USER_ID = "user-demo"
 
 # Runtime LLM configuration (overrides env vars; set via /api/llm/config)
 _runtime_llm_config: dict[str, str] = {}
+_last_llm_status: dict[str, Any] = {
+    "connected": False,
+    "checked_at": "",
+    "error": "尚未测试 LLM 连接",
+}
 
 
 def now_iso() -> str:
@@ -60,6 +65,24 @@ def get_llm_config() -> tuple[str, str, str]:
         or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     )
     return key, url, model
+
+
+def record_llm_status(connected: bool, error: str = "") -> None:
+    _last_llm_status.update(
+        {
+            "connected": connected,
+            "checked_at": now_iso(),
+            "error": error[:500],
+        }
+    )
+
+
+def open_llm_request(req: urllib.request.Request, timeout: int = 15):
+    use_system_proxy = os.getenv("PETCARE_USE_SYSTEM_PROXY", "").lower() in {"1", "true", "yes", "on"}
+    if use_system_proxy:
+        return urllib.request.urlopen(req, timeout=timeout)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
 
 
 def connect() -> sqlite3.Connection:
@@ -266,7 +289,14 @@ def get_state() -> dict[str, Any]:
     abnormal_logs = [item for item in logs if item.get("severity") in {"medium", "high"}]
 
     api_key, _, model = get_llm_config()
-    llm_desc = f"LLM 已接入 ({model})" if api_key else "规则解析（未配置 LLM）"
+    if not api_key:
+        llm_desc = "规则解析（未配置 LLM）"
+    elif _last_llm_status.get("connected"):
+        llm_desc = f"LLM 已接入 ({model})"
+    elif _last_llm_status.get("checked_at"):
+        llm_desc = f"LLM 配置异常 ({model})"
+    else:
+        llm_desc = f"LLM 已配置，待测试 ({model})"
 
     return {
         "user": {"id": DEFAULT_USER_ID, "username": "demo"},
@@ -288,6 +318,9 @@ def get_state() -> dict[str, Any]:
             "worker": "同步处理 / RocketMQ 异步就绪",
         },
         "llm_available": bool(api_key),
+        "llm_connected": bool(api_key and _last_llm_status.get("connected")),
+        "llm_error": _last_llm_status.get("error", ""),
+        "llm_model": model,
     }
 
 
@@ -295,6 +328,7 @@ def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
     """Call the configured LLM API. Returns response text or None on failure."""
     api_key, base_url, model = get_llm_config()
     if not api_key:
+        record_llm_status(False, "未配置 API Key")
         return None
     url = base_url.rstrip("/")
     if not url.endswith("/chat/completions"):
@@ -314,10 +348,36 @@ def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with open_llm_request(req, timeout=15) as response:
             body = json.loads(response.read().decode("utf-8"))
-        return body["choices"][0]["message"]["content"].strip()
-    except (OSError, urllib.error.URLError, KeyError, json.JSONDecodeError):
+        choices = body.get("choices") or []
+        if not choices:
+            record_llm_status(False, "模型响应缺少 choices 字段")
+            return None
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+        if content is None:
+            content = choices[0].get("text", "")
+        content = str(content).strip()
+        if not content:
+            record_llm_status(False, "模型响应 content 为空")
+            return None
+        record_llm_status(True)
+        return content
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")[:300]
+        record_llm_status(False, f"HTTP {exc.code}: {error_body or exc.reason}")
+        return None
+    except urllib.error.URLError as exc:
+        record_llm_status(False, f"网络连接失败：{exc.reason}")
+        return None
+    except TimeoutError:
+        record_llm_status(False, "模型请求超时")
+        return None
+    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        record_llm_status(False, f"模型调用失败：{exc}")
         return None
 
 
@@ -344,7 +404,8 @@ def try_llm_parse(content: str, pets: list[dict[str, Any]]) -> dict[str, Any] | 
         parsed = json.loads(match.group(0))
         parsed["_parser"] = "llm"
         return normalize_parse(parsed, content, pets)
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError) as exc:
+        record_llm_status(False, f"LLM 聊天解析返回内容不是合法 JSON：{exc}")
         return None
 
 
@@ -417,6 +478,9 @@ def parse_pet_record(content: str, pets: list[dict[str, Any]]) -> dict[str, Any]
             "reminder_time": reminder_time.isoformat() if reminder_time else "",
         },
     }
+    api_key, _, _ = get_llm_config()
+    if api_key and _last_llm_status.get("error"):
+        parsed["_llm_error"] = _last_llm_status["error"]
     parsed["reply"] = build_reply(parsed)
     return parsed
 
@@ -763,11 +827,14 @@ def try_llm_recommend(payload: dict[str, Any]) -> dict[str, Any] | None:
         text = re.sub(r"```\s*$", "", text, flags=re.M)
         match = re.search(r"\{.*\}", text.strip(), flags=re.S)
         if not match:
+            record_llm_status(False, "LLM 推荐返回内容不包含 JSON 对象")
             return None
         result = json.loads(match.group(0))
+        result["_source"] = "llm"
         result["llm_note"] = "由 LLM 生成个性化推荐"
         return result
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError) as exc:
+        record_llm_status(False, f"LLM 推荐返回内容不是合法 JSON：{exc}")
         return None
 
 
@@ -820,10 +887,15 @@ def recommend_pet(payload: dict[str, Any]) -> dict[str, Any]:
                 "care_plan": "先建立饮食、疫苗、驱虫和体重记录，再逐步扩展照片与健康日志。",
             }
         )
+    api_key, _, _ = get_llm_config()
+    llm_note = "当前为规则版推荐，配置 LLM 后可生成更个性化解释。"
+    if api_key and _last_llm_status.get("error"):
+        llm_note = f"LLM 调用失败，已使用规则版推荐：{_last_llm_status['error']}"
     return {
+        "_source": "rule",
         "input_summary": f"{housing}；{time_budget}；预算：{money}；偏好：{preference}",
         "recommendations": recommendations[:3],
-        "llm_note": "当前为规则版推荐，配置 LLM 后可生成更个性化解释。",
+        "llm_note": llm_note,
     }
 
 
@@ -933,8 +1005,11 @@ class PetCareHandler(SimpleHTTPRequestHandler):
             api_key, _, model = get_llm_config()
             self.send_json({
                 "available": bool(api_key),
+                "connected": bool(api_key and _last_llm_status.get("connected")),
                 "model": model,
                 "source": "runtime" if _runtime_llm_config.get("api_key") else "env",
+                "checked_at": _last_llm_status.get("checked_at", ""),
+                "error": _last_llm_status.get("error", ""),
             })
             return
         if path.startswith("/uploads/"):
@@ -991,7 +1066,17 @@ class PetCareHandler(SimpleHTTPRequestHandler):
                     "model": str(payload.get("model", "")).strip(),
                 }
                 api_key, _, model = get_llm_config()
-                self.send_json({"ok": True, "available": bool(api_key), "model": model})
+                test_text = call_llm("你是连通性测试助手。", "只回复 OK。", temperature=0) if api_key else None
+                self.send_json(
+                    {
+                        "ok": True,
+                        "available": bool(api_key),
+                        "connected": bool(test_text),
+                        "model": model,
+                        "error": _last_llm_status.get("error", ""),
+                        "checked_at": _last_llm_status.get("checked_at", ""),
+                    }
+                )
                 return
             reminder_complete = re.match(r"^/api/reminders/(?P<id>[^/]+)/complete$", path)
             if reminder_complete:

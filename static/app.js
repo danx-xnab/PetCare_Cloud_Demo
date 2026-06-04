@@ -144,14 +144,21 @@ function renderAll() {
 
 function updateLlmStatus() {
   const available = state.data?.llm_available;
+  const connected = state.data?.llm_connected;
   const dot = document.getElementById("llmDot");
   const label = document.getElementById("parserMode");
-  if (available) {
+  if (connected) {
     dot.className = "llm-dot online";
     label.textContent = "LLM 已接入";
+    label.title = "";
+  } else if (available) {
+    dot.className = "llm-dot offline";
+    label.textContent = "LLM 配置异常";
+    label.title = state.data?.llm_error || "";
   } else {
     dot.className = "llm-dot offline";
     label.textContent = "规则解析";
+    label.title = "";
   }
 }
 
@@ -631,7 +638,7 @@ async function handleRecommend(event) {
     const payload = Object.fromEntries(form.entries());
     const result = await api("/api/recommend", { method: "POST", body: JSON.stringify(payload) });
     document.getElementById("recommendSource").textContent =
-      result.llm_note?.includes("LLM") ? "LLM" : "规则引擎";
+      result._source === "llm" ? "LLM" : "规则引擎";
     document.getElementById("recommendResult").innerHTML = result.recommendations
       .map((item) => `
         <article class="result-card">
@@ -696,10 +703,12 @@ async function saveLlmConfig() {
       model:    document.getElementById("llmModel").value.trim() || "gpt-4o-mini",
     };
     const result = await api("/api/llm/config", { method: "POST", body: JSON.stringify(payload) });
-    testEl.textContent = result.available
+    testEl.textContent = result.connected
       ? `✅ 配置成功，模型：${result.model}`
-      : "⚠️ 配置已保存，但 API Key 为空，将使用规则引擎";
-    testEl.className = "llm-test-result " + (result.available ? "ok" : "warn");
+      : result.available
+        ? `⚠️ 已保存，但模型连通性测试失败：${result.error || "未知错误"}`
+        : "⚠️ API Key 为空，将使用规则引擎";
+    testEl.className = "llm-test-result " + (result.connected ? "ok" : "warn");
     // Refresh state so LLM status badge updates
     await loadState();
     showToast("LLM 配置已保存", "success");
