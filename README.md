@@ -43,6 +43,15 @@ python server.py --host 127.0.0.1 --port 8000
 $env:PETCARE_USE_SYSTEM_PROXY="1"
 ```
 
+不同 LLM 任务可单独调整超时时间，单位为秒：
+
+```powershell
+$env:PETCARE_LLM_CHAT_TIMEOUT="30"
+$env:PETCARE_LLM_RECOMMEND_TIMEOUT="60"
+$env:PETCARE_LLM_SUMMARY_TIMEOUT="45"
+$env:PETCARE_LLM_TEST_TIMEOUT="20"
+```
+
 模型输出被约束为固定 JSON，后端再写入 `ChatMessage`、`HealthLog` 和 `Reminder`。
 
 ## Docker 部署

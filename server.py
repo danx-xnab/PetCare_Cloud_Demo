@@ -85,6 +85,14 @@ def open_llm_request(req: urllib.request.Request, timeout: int = 15):
     return opener.open(req, timeout=timeout)
 
 
+def env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, ""))
+        return value if value > 0 else default
+    except ValueError:
+        return default
+
+
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -324,12 +332,19 @@ def get_state() -> dict[str, Any]:
     }
 
 
-def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
+def call_llm(
+    system: str,
+    user: str,
+    temperature: float = 0.1,
+    timeout: int | None = None,
+    max_tokens: int | None = 800,
+) -> str | None:
     """Call the configured LLM API. Returns response text or None on failure."""
     api_key, base_url, model = get_llm_config()
     if not api_key:
         record_llm_status(False, "未配置 API Key")
         return None
+    timeout = timeout or env_int("PETCARE_LLM_TIMEOUT", 30)
     url = base_url.rstrip("/")
     if not url.endswith("/chat/completions"):
         url = url + "/chat/completions"
@@ -341,6 +356,8 @@ def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
             {"role": "user", "content": user},
         ],
     }
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
     req = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -348,7 +365,7 @@ def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
         method="POST",
     )
     try:
-        with open_llm_request(req, timeout=15) as response:
+        with open_llm_request(req, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
         choices = body.get("choices") or []
         if not choices:
@@ -374,7 +391,7 @@ def call_llm(system: str, user: str, temperature: float = 0.1) -> str | None:
         record_llm_status(False, f"网络连接失败：{exc.reason}")
         return None
     except TimeoutError:
-        record_llm_status(False, "模型请求超时")
+        record_llm_status(False, f"模型请求超时（{timeout}s）")
         return None
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         record_llm_status(False, f"模型调用失败：{exc}")
@@ -391,7 +408,7 @@ def try_llm_parse(content: str, pets: list[dict[str, Any]]) -> dict[str, Any] | 
         "need_reminder（布尔）, reminder（含 title 和 time 的对象）, reply（字符串，友好回复）。"
     )
     user = f"已有宠物：{pet_names}\n用户输入：{content}"
-    text = call_llm(system, user)
+    text = call_llm(system, user, timeout=env_int("PETCARE_LLM_CHAT_TIMEOUT", 30), max_tokens=700)
     if not text:
         return None
     try:
@@ -810,7 +827,8 @@ def try_llm_recommend(payload: dict[str, Any]) -> dict[str, Any] | None:
     preference = payload.get("preference", "")
 
     system = (
-        "你是专业的宠物顾问。根据用户条件，推荐最多3种适合的宠物，输出 JSON，不输出 Markdown。"
+        "你是专业的宠物顾问。根据用户条件，推荐最多3种适合的宠物。"
+        "只输出紧凑 JSON，不输出 Markdown，不输出思考过程。"
         "格式：{\"recommendations\": [{\"name\": 宠物类型, \"score\": 0-100整数, "
         "\"reason\": 理由, \"care_plan\": 护理建议}], "
         "\"input_summary\": 简短用户画像摘要}"
@@ -819,7 +837,13 @@ def try_llm_recommend(payload: dict[str, Any]) -> dict[str, Any] | None:
         f"居住空间：{housing}；陪伴时间：{time_budget}；预算：{money}；"
         f"过敏：{allergies}；经验：{experience}；偏好：{preference}"
     )
-    text = call_llm(system, user, temperature=0.3)
+    text = call_llm(
+        system,
+        user,
+        temperature=0.2,
+        timeout=env_int("PETCARE_LLM_RECOMMEND_TIMEOUT", 60),
+        max_tokens=900,
+    )
     if not text:
         return None
     try:
@@ -917,7 +941,13 @@ def summarize_pet_health(pet_id: str) -> dict[str, Any]:
         "输出 JSON：{\"summary\":\"…\",\"highlights\":[\"…\"],\"suggestions\":[\"…\"]}。不做医疗诊断。"
     )
     user = f"宠物：{pet['name']}\n日志：\n{logs_text}"
-    text = call_llm(system, user, temperature=0.4)
+    text = call_llm(
+        system,
+        user,
+        temperature=0.3,
+        timeout=env_int("PETCARE_LLM_SUMMARY_TIMEOUT", 45),
+        max_tokens=900,
+    )
     if text:
         try:
             text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.M)
@@ -1066,7 +1096,17 @@ class PetCareHandler(SimpleHTTPRequestHandler):
                     "model": str(payload.get("model", "")).strip(),
                 }
                 api_key, _, model = get_llm_config()
-                test_text = call_llm("你是连通性测试助手。", "只回复 OK。", temperature=0) if api_key else None
+                test_text = (
+                    call_llm(
+                        "你是连通性测试助手。",
+                        "只回复 OK。",
+                        temperature=0,
+                        timeout=env_int("PETCARE_LLM_TEST_TIMEOUT", 20),
+                        max_tokens=16,
+                    )
+                    if api_key
+                    else None
+                )
                 self.send_json(
                     {
                         "ok": True,
