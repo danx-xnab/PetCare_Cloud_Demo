@@ -5,7 +5,10 @@ const state = {
   view: "dashboard",
   lastParsed: null,
   allLogs: [],   // unfiltered copy for client-side filtering
+  dashboardReminderFilter: "pending",
 };
+
+let confirmResolver = null;
 
 const viewTitles = {
   dashboard: ["PetCare Cloud", "今日待办"],
@@ -77,6 +80,27 @@ function petName(id) {
 function petEmoji(id) {
   const pet = state.data?.pets.find((p) => p.id === id);
   return speciesEmoji[pet?.species] || "🐾";
+}
+
+function showConfirm({ title = "确认操作", message = "确定继续吗？", okText = "确认" } = {}) {
+  const modal = document.getElementById("confirmModal");
+  document.getElementById("confirmTitle").textContent = title;
+  document.getElementById("confirmMessage").textContent = message;
+  document.getElementById("confirmOk").textContent = okText;
+  modal.classList.remove("hidden");
+  document.getElementById("confirmCancel").focus();
+  return new Promise((resolve) => {
+    confirmResolver = resolve;
+  });
+}
+
+function closeConfirm(result = false) {
+  const modal = document.getElementById("confirmModal");
+  modal.classList.add("hidden");
+  if (confirmResolver) {
+    confirmResolver(result);
+    confirmResolver = null;
+  }
 }
 
 function showToast(msg, type = "info") {
@@ -181,10 +205,41 @@ function renderMetrics() {
 // ===== Dashboard =====
 
 function renderDashboard() {
-  const pending = state.data.reminders.filter((r) => r.status === "pending").slice(0, 6);
-  document.getElementById("pendingCount").textContent = `${pending.length} pending`;
-  document.getElementById("dashboardReminders").innerHTML = pending.length
-    ? pending.map(reminderItem).join("")
+  const reminders = sortRemindersByTime(state.data.reminders || []);
+  const buckets = {
+    pending: reminders.filter((r) => reminderStatus(r) === "pending"),
+    done: reminders.filter((r) => reminderStatus(r) === "done"),
+    overdue: reminders.filter((r) => reminderStatus(r) === "overdue"),
+  };
+  const labels = {
+    pending: "待处理",
+    done: "已完成",
+    overdue: "已过期",
+  };
+  if (!labels[state.dashboardReminderFilter]) {
+    state.dashboardReminderFilter = "pending";
+  }
+  const activeItems = buckets[state.dashboardReminderFilter];
+  document.getElementById("pendingCount").textContent =
+    `${buckets.pending.length} 待处理 / ${buckets.done.length} 已完成 / ${buckets.overdue.length} 已过期`;
+  document.getElementById("dashboardReminders").innerHTML = reminders.length
+    ? `
+      <div class="reminder-tabs" role="tablist" aria-label="待办分类">
+        ${Object.entries(labels).map(([key, label]) => `
+          <button
+            class="reminder-tab ${state.dashboardReminderFilter === key ? "active" : ""}"
+            type="button"
+            data-dashboard-reminder-filter="${key}"
+            role="tab"
+            aria-selected="${state.dashboardReminderFilter === key}"
+          >
+            <span>${label}</span>
+            <strong>${buckets[key].length}</strong>
+          </button>`).join("")}
+      </div>
+      <div class="list">
+        ${activeItems.length ? activeItems.map(reminderItem).join("") : `<div class="empty small">暂无${labels[state.dashboardReminderFilter]}提醒</div>`}
+      </div>`
     : `<div class="empty">暂无待办提醒 🎉</div>`;
 
   const logs = state.data.logs.slice(0, 7);
@@ -193,10 +248,25 @@ function renderDashboard() {
     : `<div class="empty">暂无健康日志</div>`;
 }
 
+function reminderTime(item) {
+  const time = new Date(item.reminder_time || "").getTime();
+  return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
+}
+
+function sortRemindersByTime(items) {
+  return [...items].sort((a, b) => reminderTime(a) - reminderTime(b));
+}
+
+function reminderStatus(item) {
+  if (item.status === "done") return "done";
+  return reminderTime(item) < Date.now() ? "overdue" : "pending";
+}
+
 function reminderItem(item) {
-  const done = item.status === "done";
-  const today = new Date().toISOString().slice(0, 10);
-  const overdue = !done && item.reminder_time?.slice(0, 10) < today;
+  const status = reminderStatus(item);
+  const done = status === "done";
+  const overdue = status === "overdue";
+  const badgeText = done ? "已完成" : overdue ? "已过期" : "待处理";
   return `
     <article class="item ${done ? "done" : ""} ${overdue ? "overdue" : ""}">
       <div class="item-head">
@@ -206,13 +276,12 @@ function reminderItem(item) {
             ${overdue ? '<span class="overdue-badge">逾期</span>' : ""}
           </p>
         </div>
-        <span class="badge ${done ? "done" : ""}">${done ? "已完成" : "待处理"}</span>
+        <span class="badge ${done ? "done" : ""} ${overdue ? "overdue" : ""}">${badgeText}</span>
       </div>
-      ${!done ? `
-        <div class="item-actions">
-          <button class="ghost-action small complete-reminder" data-id="${item.id}">✓ 完成</button>
-          <button class="ghost-action small danger delete-reminder" data-id="${item.id}">✕ 删除</button>
-        </div>` : ""}
+      <div class="item-actions">
+        ${!done ? `<button class="ghost-action small complete-reminder" data-id="${item.id}">✓ 完成</button>` : ""}
+        <button class="ghost-action small danger delete-reminder" data-id="${item.id}">✕ 删除</button>
+      </div>
     </article>`;
 }
 
@@ -568,17 +637,23 @@ function populateReminderPetSelect() {
     rt.value = formatDateTimeLocal(tomorrow.toISOString());
   }
   // Update count badge
-  const total = state.data?.reminders?.length || 0;
-  const pending = state.data?.reminders?.filter((r) => r.status === "pending").length || 0;
-  document.getElementById("reminderCount").textContent = `${pending} 待处理 / ${total} 条`;
+  const visible = visibleReminderTasks(state.data?.reminders || []);
+  const pending = visible.filter((item) => reminderStatus(item) === "pending").length;
+  const overdue = visible.filter((item) => reminderStatus(item) === "overdue").length;
+  document.getElementById("reminderCount").textContent = `${pending} 待处理 / ${overdue} 已过期`;
 }
 
 function renderReminders() {
   const list = document.getElementById("reminderList");
   if (!list) return;
-  list.innerHTML = (state.data.reminders || []).length
-    ? state.data.reminders.map(reminderItem).join("")
-    : `<div class="empty">暂无提醒任务</div>`;
+  const reminders = visibleReminderTasks(state.data.reminders || []);
+  list.innerHTML = reminders.length
+    ? reminders.map(reminderItem).join("")
+    : `<div class="empty">暂无待处理提醒任务</div>`;
+}
+
+function visibleReminderTasks(items) {
+  return sortRemindersByTime(items.filter((item) => item.status !== "done"));
 }
 
 async function handleReminderSubmit(event) {
@@ -616,7 +691,15 @@ async function completeReminder(id) {
 }
 
 async function deleteReminder(id) {
-  if (!confirm("确定删除此提醒？")) return;
+  const reminder = state.data?.reminders?.find((item) => item.id === id);
+  const ok = await showConfirm({
+    title: "删除提醒",
+    message: reminder
+      ? `确定删除“${reminder.title}”吗？删除后无法恢复。`
+      : "确定删除这条提醒吗？删除后无法恢复。",
+    okText: "删除提醒",
+  });
+  if (!ok) return;
   try {
     const result = await api(`/api/reminders/${id}`, { method: "DELETE" });
     state.data = result.state;
@@ -815,6 +898,14 @@ function bindEvents() {
     if (e.target === e.currentTarget) closeLlmModal();
   });
 
+  // Confirm modal
+  document.getElementById("confirmClose").addEventListener("click", () => closeConfirm(false));
+  document.getElementById("confirmCancel").addEventListener("click", () => closeConfirm(false));
+  document.getElementById("confirmOk").addEventListener("click", () => closeConfirm(true));
+  document.getElementById("confirmModal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeConfirm(false);
+  });
+
   // Navigation
   document.querySelectorAll(".nav-item").forEach((btn) =>
     btn.addEventListener("click", () => setView(btn.dataset.view))
@@ -828,6 +919,13 @@ function bindEvents() {
   document.body.addEventListener("click", async (e) => {
     const sample = e.target.closest("[data-sample]");
     if (sample) { await sendChat(sample.dataset.sample); return; }
+
+    const dashboardFilter = e.target.closest("[data-dashboard-reminder-filter]");
+    if (dashboardFilter) {
+      state.dashboardReminderFilter = dashboardFilter.dataset.dashboardReminderFilter;
+      renderDashboard();
+      return;
+    }
 
     const complete = e.target.closest(".complete-reminder");
     if (complete) { await completeReminder(complete.dataset.id); return; }

@@ -153,6 +153,8 @@ input:focus, select:focus, textarea:focus {
 .primary-action { background: var(--green); color: #fff; }
 .primary-action:hover { background: #1b624b; }
 .primary-action:disabled { opacity: .6; cursor: not-allowed; }
+.primary-action.danger { background: var(--rose); }
+.primary-action.danger:hover { background: #94394d; }
 .ghost-action, .chip { background: var(--surface); color: var(--ink); border-color: var(--line); }
 .ghost-action:hover, .chip:hover { border-color: var(--green); color: var(--green); }
 .ghost-action.small { min-height: 28px; padding: 0 10px; font-size: 13px; }
@@ -228,6 +230,7 @@ input:focus, select:focus, textarea:focus {
 .badge.medium  { color: var(--amber); background: #fff1dc; }
 .badge.high    { color: var(--rose);  background: #ffe8ed; }
 .badge.done    { color: var(--muted); background: #f0f2f1; }
+.badge.overdue { color: var(--rose); background: #ffe8ed; }
 .badge-llm {
   color: var(--blue); background: #e8f3fb;
   border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; font-size: 12px;
@@ -309,6 +312,43 @@ td { font-size: 13px; }
 
 /* ===== Reminders ===== */
 /* (uses .item + .item-actions) */
+.reminder-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.reminder-tab {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.reminder-tab strong {
+  min-width: 22px;
+  min-height: 22px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12px;
+}
+.reminder-tab.active {
+  border-color: var(--green);
+  background: var(--green-2);
+  color: var(--green);
+}
+.reminder-tab.active strong {
+  background: var(--green);
+  color: #fff;
+}
+.empty.small { padding: 12px; font-size: 13px; }
 
 /* ===== Recommend ===== */
 .result-card p.care-plan { color: var(--green); }
@@ -351,6 +391,7 @@ td { font-size: 13px; }
   background: var(--surface); border-radius: 10px; box-shadow: var(--shadow);
   overflow: hidden;
 }
+.confirm-box { width: min(420px,100%); }
 .modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid var(--line);
@@ -367,6 +408,7 @@ td { font-size: 13px; }
   padding: 14px 20px; border-top: 1px solid var(--line);
 }
 .config-hint { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.6; }
+.confirm-message { margin: 0; color: var(--ink); line-height: 1.6; }
 
 .llm-test-result {
   padding: 10px 12px; border-radius: 6px;
