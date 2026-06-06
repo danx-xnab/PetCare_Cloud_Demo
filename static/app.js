@@ -4,6 +4,7 @@ const state = {
   view: "dashboard",
   allLogs: [],
   dashboardReminderFilter: "pending",
+  assistantPending: null,
 };
 
 const viewTitles = {
@@ -378,7 +379,8 @@ function renderChat() {
 function renderAssistantStream() {
   const stream = document.getElementById("assistantStream");
   const messages = (state.data?.messages || []).map(normalizeMessage).slice().reverse();
-  if (!messages.length) {
+  const pending = state.assistantPending;
+  if (!messages.length && !pending) {
     stream.innerHTML = `
       <div class="assistant-welcome">
         <span class="pet-head-icon"></span>
@@ -387,12 +389,22 @@ function renderAssistantStream() {
     `;
     return;
   }
-  stream.innerHTML = messages
+  const messageHtml = messages
     .map((message, index) => `
       <div class="bubble user" id="msg-${index}">${escapeHtml(message.raw_content)}</div>
       <div class="bubble ai">${escapeHtml(message.parsed_result.reply || "已记录")}</div>
     `)
     .join("");
+  const pendingHtml = pending
+    ? `
+      <div class="bubble user pending">${escapeHtml(pending.content)}</div>
+      <div class="bubble ai loading" aria-live="polite">
+        <span>小护正在整理记录</span>
+        <span class="typing-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </div>
+    `
+    : "";
+  stream.innerHTML = messageHtml + pendingHtml;
   stream.scrollTop = stream.scrollHeight;
 }
 
@@ -500,7 +512,6 @@ async function sendChat(content) {
   });
   state.data = result.state;
   state.allLogs = [...(state.data.logs || [])];
-  renderAll();
   return result.parsed;
 }
 
@@ -516,9 +527,15 @@ async function handleAssistantSubmit(event) {
   setLoading(button, true, "记录中...");
   try {
     input.value = "";
+    state.assistantPending = { content };
+    renderAssistantStream();
     const parsed = await sendChat(content);
-    showToast(parsed?.reply || "已记录", "success");
+    state.assistantPending = null;
+    renderAll();
   } catch (err) {
+    input.value = content;
+    state.assistantPending = null;
+    renderAssistantStream();
     showToast(err.message, "error");
   } finally {
     setLoading(button, false);
