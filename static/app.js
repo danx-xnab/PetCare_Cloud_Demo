@@ -484,6 +484,7 @@ function renderCloud() {
     object_storage: "对象存储 OBS",
     llm: "LLM 解析服务",
     worker: "异步 Worker",
+    functiongraph: "云函数 FunctionGraph",
   };
   document.getElementById("cloudStatus").innerHTML = Object.entries(state.data.cloud || {})
     .map(([key, value]) => `
@@ -493,6 +494,58 @@ function renderCloud() {
       </article>
     `)
     .join("");
+  renderCloudFunction();
+}
+
+function renderCloudFunction() {
+  const box = document.getElementById("cloudFunctionStatus");
+  if (!box) return;
+  const info = state.data.cloud_function || {};
+  const latest = info.latest;
+  if (!latest) {
+    box.innerHTML = `
+      <div class="cloud-function-card empty-function">
+        <strong>${info.configured ? "等待 FunctionGraph 首次触发" : "FunctionGraph Token 未配置"}</strong>
+        <p>创建华为云 FunctionGraph 函数后，它会调用后端接口生成每日护理摘要，执行结果会显示在这里。</p>
+      </div>
+    `;
+    return;
+  }
+  const result = latest.result || {};
+  const metrics = result.metrics || {};
+  const actions = result.action_items || [];
+  const runs = info.runs || [];
+  box.innerHTML = `
+    <article class="cloud-function-card">
+      <div class="function-head">
+        <div>
+          <strong>${escapeHtml(latest.function_name || "daily-care-summary")}</strong>
+          <span>${escapeHtml(latest.trigger_type || "functiongraph")} · ${escapeHtml(formatDateTime(latest.created_at))}</span>
+        </div>
+        <span class="badge low">${escapeHtml(latest.status || "success")}</span>
+      </div>
+      <p>${escapeHtml(latest.summary || result.summary || "云函数已执行。")}</p>
+      <div class="function-metrics">
+        <span>日志 ${metrics.logs ?? 0}</span>
+        <span>待办 ${metrics.pending_reminders ?? 0}</span>
+        <span>完成 ${metrics.done_reminders ?? 0}</span>
+        <span>异常 ${metrics.abnormal_logs ?? 0}</span>
+      </div>
+      <div class="function-actions">
+        ${actions.length
+          ? actions.map((item) => `<div>${escapeHtml(item)}</div>`).join("")
+          : `<div>暂无待办行动项。</div>`}
+      </div>
+    </article>
+    <div class="function-run-list">
+      ${runs.slice(0, 4).map((run) => `
+        <div>
+          <span>${escapeHtml(formatDateTime(run.created_at))}</span>
+          <strong>${escapeHtml(run.status || "success")}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
 function openAssistant() {

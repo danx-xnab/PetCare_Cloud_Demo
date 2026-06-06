@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hmac
 import json
 import mimetypes
 import os
@@ -161,6 +162,16 @@ def init_db() -> None:
               source_message_id TEXT,
               created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS cloud_function_runs (
+              id TEXT PRIMARY KEY,
+              function_name TEXT NOT NULL,
+              trigger_type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              result TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             """
         )
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -283,9 +294,15 @@ def get_state() -> dict[str, Any]:
     logs = rows("SELECT * FROM health_logs ORDER BY created_at DESC LIMIT 80")
     reminders = rows("SELECT * FROM reminders ORDER BY status ASC, reminder_time ASC LIMIT 80")
     messages = rows("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT 40")
+    cloud_runs = rows("SELECT * FROM cloud_function_runs ORDER BY created_at DESC LIMIT 8")
     for message in messages:
         try:
             message["parsed_result"] = json.loads(message["parsed_result"])
+        except json.JSONDecodeError:
+            pass
+    for run in cloud_runs:
+        try:
+            run["result"] = json.loads(run["result"])
         except json.JSONDecodeError:
             pass
     today = datetime.now().date().isoformat()
@@ -324,6 +341,12 @@ def get_state() -> dict[str, Any]:
             "object_storage": "本地存储 / OBS 对象存储",
             "llm": llm_desc,
             "worker": "同步处理 / RocketMQ 异步就绪",
+            "functiongraph": "FunctionGraph 每日护理摘要",
+        },
+        "cloud_function": {
+            "configured": bool(os.getenv("PETCARE_FUNCTION_TOKEN", "").strip()),
+            "latest": cloud_runs[0] if cloud_runs else None,
+            "runs": cloud_runs,
         },
         "llm_available": bool(api_key),
         "llm_connected": bool(api_key and _last_llm_status.get("connected")),
@@ -1040,6 +1063,115 @@ def build_obs_object_url(bucket: str, endpoint: str, object_key: str) -> str:
     return f"{scheme}://{bucket}.{host}/{quote(object_key, safe='/')}"
 
 
+def verify_function_token(headers: Any, payload: dict[str, Any]) -> None:
+    expected = os.getenv("PETCARE_FUNCTION_TOKEN", "").strip()
+    if not expected:
+        return
+
+    auth = str(headers.get("Authorization", "")).strip()
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    provided = (
+        str(headers.get("X-Function-Token", "")).strip()
+        or bearer
+        or str(payload.get("token", "")).strip()
+    )
+    if not provided or not hmac.compare_digest(provided, expected):
+        raise PermissionError("云函数 Token 校验失败")
+
+
+def run_daily_summary_function(payload: dict[str, Any]) -> dict[str, Any]:
+    date_text = str(payload.get("date", "")).strip() or datetime.now().date().isoformat()
+    trigger_type = str(payload.get("trigger_type", "")).strip() or "functiongraph"
+    function_name = str(payload.get("function_name", "")).strip() or "daily-care-summary"
+
+    logs = rows(
+        """
+        SELECT h.*, p.name AS pet_name
+        FROM health_logs h
+        LEFT JOIN pets p ON p.id = h.pet_id
+        WHERE h.date = ?
+        ORDER BY h.created_at DESC
+        """,
+        (date_text,),
+    )
+    reminders = rows(
+        """
+        SELECT r.*, p.name AS pet_name
+        FROM reminders r
+        LEFT JOIN pets p ON p.id = r.pet_id
+        WHERE substr(r.reminder_time, 1, 10) <= ?
+        ORDER BY r.status ASC, r.reminder_time ASC
+        """,
+        (date_text,),
+    )
+    abnormal = [item for item in logs if item.get("severity") in {"medium", "high"}]
+    pending = [item for item in reminders if item.get("status") == "pending"]
+    done = [item for item in reminders if item.get("status") == "done"]
+
+    summary = (
+        f"{date_text} 云函数已生成护理摘要："
+        f"今日健康日志 {len(logs)} 条，待处理提醒 {len(pending)} 条，"
+        f"已完成提醒 {len(done)} 条，异常/需观察记录 {len(abnormal)} 条。"
+    )
+    highlights = [
+        f"{item.get('pet_name') or '宠物'}：{item.get('summary', '')}"
+        for item in logs[:4]
+    ]
+    action_items = [
+        f"{item.get('pet_name') or '宠物'}：{item.get('title', '')}"
+        for item in pending[:6]
+    ]
+    if abnormal:
+        action_items.append("关注异常记录，必要时联系宠物医院。")
+    if not action_items:
+        action_items.append("今日暂无紧急护理事项，保持正常观察。")
+
+    result = {
+        "date": date_text,
+        "metrics": {
+            "logs": len(logs),
+            "pending_reminders": len(pending),
+            "done_reminders": len(done),
+            "abnormal_logs": len(abnormal),
+        },
+        "summary": summary,
+        "highlights": highlights,
+        "action_items": action_items,
+        "source": "functiongraph",
+    }
+    run_id = f"fn-{uuid.uuid4().hex[:10]}"
+    created_at = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO cloud_function_runs
+            (id, function_name, trigger_type, status, summary, result, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                function_name,
+                trigger_type,
+                "success",
+                summary,
+                json.dumps(result, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        conn.commit()
+
+    return {
+        "id": run_id,
+        "function_name": function_name,
+        "trigger_type": trigger_type,
+        "status": "success",
+        "summary": summary,
+        "result": result,
+        "created_at": created_at,
+        "state": get_state(),
+    }
+
+
 class PetCareHandler(SimpleHTTPRequestHandler):
     server_version = "PetCareCloudDemo/1.0"
 
@@ -1053,7 +1185,7 @@ class PetCareHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Function-Token")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
         self.end_headers()
         self.wfile.write(body)
@@ -1064,7 +1196,7 @@ class PetCareHandler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Function-Token")
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
         self.end_headers()
 
@@ -1126,6 +1258,14 @@ class PetCareHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/reminders":
                 self.send_json(create_reminder(payload), 201)
+                return
+            if path == "/api/cloud/function/daily-summary":
+                try:
+                    verify_function_token(self.headers, payload)
+                except PermissionError as exc:
+                    self.send_error_json(str(exc), 401)
+                    return
+                self.send_json(run_daily_summary_function(payload), 201)
                 return
             summarize_match = re.match(r"^/api/pets/(?P<id>[^/]+)/summarize$", path)
             if summarize_match:

@@ -17,6 +17,7 @@ services:
       OBS_ACCESS_KEY_ID: ${OBS_ACCESS_KEY_ID:-}
       OBS_SECRET_ACCESS_KEY: ${OBS_SECRET_ACCESS_KEY:-}
       OBS_PREFIX: ${OBS_PREFIX:-petcare-uploads}
+      PETCARE_FUNCTION_TOKEN: ${PETCARE_FUNCTION_TOKEN:-}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads

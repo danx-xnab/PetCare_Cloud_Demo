@@ -38,6 +38,7 @@
 | 数据库 | SQLite，挂载到 ECS 的 `/opt/PetCare_Cloud_Demo/data` |
 | 对象存储 | 华为云 OBS 桶 `cloudhw2`，区域 `cn-north-4` |
 | 上传路径 | `petcare-uploads/` |
+| 云函数 | 华为云 FunctionGraph，触发每日护理摘要 |
 | 密钥管理 | `.env` 环境变量注入，`.env` 不进入 GitHub |
 
 ## 云资源清单
@@ -52,7 +53,7 @@
 | HTTPS | 当前使用公网 IP 测试 | 后续接入 Nginx + Certbot 或云厂商 SSL 证书 |
 | CI/CD | 手动 `git pull` + `docker compose` | 后续可接 GitHub Actions |
 | 消息队列 | 当前同步调用 LLM | 后续将聊天记录写入队列，由 Worker 异步解析 |
-| 云函数 | 当前后端同步生成提醒 | 后续用定时云函数生成健康周报和每日提醒 |
+| 云函数 | FunctionGraph 触发每日护理摘要 | 后续扩展为健康周报和异常通知 |
 
 ## 1. 准备 ECS
 
@@ -148,6 +149,76 @@ OBS_PREFIX=petcare-uploads
 - 当前桶如果设置为公开读，上传后的头像 URL 可以直接被浏览器访问。
 - 华北-北京四对应区域为 `cn-north-4`，Endpoint 为 `https://obs.cn-north-4.myhuaweicloud.com`。
 - 如果不想启用 OBS，把 `PETCARE_STORAGE` 改回 `local` 即可。
+
+## 4.2 配置 FunctionGraph 云函数
+
+后端提供云函数回调接口：
+
+```text
+POST /api/cloud/function/daily-summary
+```
+
+FunctionGraph 调用该接口后，ECS 后端会统计当日健康日志、待处理提醒、异常记录，并将执行结果写入 `cloud_function_runs` 表，云架构页面会展示最近一次执行摘要。
+
+### ECS 侧配置
+
+生成一个云函数回调 Token：
+
+```bash
+openssl rand -hex 24
+```
+
+把生成值写入 ECS 的 `.env`：
+
+```env
+PETCARE_FUNCTION_TOKEN=你生成的随机 Token
+```
+
+重新启动容器，让环境变量生效：
+
+```bash
+docker rm -f petcare-cloud-demo
+docker build -t petcare-cloud-demo .
+docker run -d \
+  --name petcare-cloud-demo \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  --env-file /opt/PetCare_Cloud_Demo/.env \
+  -v /opt/PetCare_Cloud_Demo/data:/app/data \
+  -v /opt/PetCare_Cloud_Demo/uploads:/app/uploads \
+  petcare-cloud-demo
+```
+
+### FunctionGraph 侧配置
+
+在华为云控制台创建 FunctionGraph 函数：
+
+- 函数类型：事件函数
+- 运行时：Python 3.10
+- Handler：`index.handler`
+- 代码位置：复制 `cloud_functions/daily_summary/index.py`
+
+环境变量：
+
+```text
+PETCARE_BACKEND_URL=http://124.70.69.49:8000
+PETCARE_FUNCTION_TOKEN=和 ECS .env 中相同的 Token
+```
+
+建议触发器：
+
+- 定时触发器：每天 09:00 执行
+- 课堂演示：在 FunctionGraph 控制台点击测试
+
+测试事件：
+
+```json
+{
+  "trigger_type": "manual-test"
+}
+```
+
+测试成功后，访问系统的“云架构”页面，可以看到 FunctionGraph 最近一次执行摘要。
 
 ## 5. 启动服务
 

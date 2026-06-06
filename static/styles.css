@@ -1130,6 +1130,84 @@ th {
   font-size: 13px;
 }
 
+.cloud-function-panel {
+  grid-column: 1 / -1;
+}
+
+.cloud-function-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfdfb;
+}
+
+.cloud-function-card.empty-function {
+  color: var(--muted);
+}
+
+.cloud-function-card p {
+  margin: 12px 0;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+.function-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.function-head strong,
+.function-head span {
+  display: block;
+}
+
+.function-head span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.function-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.function-metrics span,
+.function-actions div,
+.function-run-list div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.function-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.function-run-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.function-run-list div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.function-run-list strong {
+  color: var(--green);
+}
+
 .flow {
   display: grid;
   grid-template-columns: repeat(6, minmax(116px, 1fr));
