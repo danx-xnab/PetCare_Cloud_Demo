@@ -494,7 +494,48 @@ function renderCloud() {
       </article>
     `)
     .join("");
+  renderMessageQueue();
   renderCloudFunction();
+}
+
+function renderMessageQueue() {
+  const box = document.getElementById("messageQueueStatus");
+  if (!box) return;
+  const queue = state.data.message_queue || {};
+  const counts = queue.counts || {};
+  const events = queue.events || [];
+  box.innerHTML = `
+    <article class="queue-card">
+      <div class="queue-head">
+        <div>
+          <strong>${escapeHtml(queue.topic || "petcare.record.events")}</strong>
+          <span>${escapeHtml(queue.mode || "local-demo")} · 本地 SQLite 队列模拟</span>
+        </div>
+        <span class="badge low">DMS/RocketMQ Ready</span>
+      </div>
+      <div class="queue-metrics">
+        <span>待处理 ${counts.pending ?? 0}</span>
+        <span>处理中 ${counts.processing ?? 0}</span>
+        <span>已消费 ${counts.done ?? 0}</span>
+        <span>失败 ${counts.failed ?? 0}</span>
+      </div>
+      <div class="queue-events">
+        ${events.length
+          ? events.slice(0, 5).map((event) => {
+              const payload = event.payload || {};
+              const result = event.result || {};
+              return `
+                <div class="queue-event">
+                  <span>${escapeHtml(formatDateTime(event.created_at))}</span>
+                  <strong>${escapeHtml(event.status || "pending")}</strong>
+                  <p>${escapeHtml(payload.summary || result.note || event.message_key || "队列消息")}</p>
+                </div>
+              `;
+            }).join("")
+          : `<div class="queue-event empty">还没有队列消息。发送一条聊天记录，或点击“投递演示消息”。</div>`}
+      </div>
+    </article>
+  `;
 }
 
 function renderCloudFunction() {
@@ -546,6 +587,25 @@ function renderCloudFunction() {
       `).join("")}
     </div>
   `;
+}
+
+async function triggerQueueDemo() {
+  const button = document.getElementById("queueDemoBtn");
+  setLoading(button, true, "投递中...");
+  try {
+    const result = await api("/api/queue/demo", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    state.data = result.state;
+    state.allLogs = [...(state.data.logs || [])];
+    renderAll();
+    showToast("演示消息已投递并消费", "success");
+  } catch (err) {
+    showToast(err.message, "error");
+  } finally {
+    setLoading(button, false);
+  }
 }
 
 function openAssistant() {
@@ -1065,6 +1125,7 @@ function bindEvents() {
   document.getElementById("llmModalClose").addEventListener("click", closeLlmModal);
   document.getElementById("llmModalClose2").addEventListener("click", closeLlmModal);
   document.getElementById("llmSaveBtn").addEventListener("click", saveLlmConfig);
+  document.getElementById("queueDemoBtn").addEventListener("click", triggerQueueDemo);
 
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));

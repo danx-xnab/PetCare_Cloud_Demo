@@ -1134,6 +1134,77 @@ th {
   grid-column: 1 / -1;
 }
 
+.cloud-queue-panel {
+  grid-column: 1 / -1;
+}
+
+.queue-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfdfb;
+}
+
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.queue-head strong,
+.queue-head span {
+  display: block;
+}
+
+.queue-head span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.queue-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.queue-metrics span,
+.queue-event {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.queue-events {
+  display: grid;
+  gap: 8px;
+}
+
+.queue-event {
+  display: grid;
+  grid-template-columns: 120px 72px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.queue-event strong {
+  color: var(--green);
+}
+
+.queue-event p {
+  margin: 0;
+  color: var(--text);
+}
+
+.queue-event.empty {
+  display: block;
+}
+
 .cloud-function-card {
   border: 1px solid var(--line);
   border-radius: 8px;

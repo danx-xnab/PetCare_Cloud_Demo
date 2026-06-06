@@ -14,6 +14,7 @@
 - 数据持久化：SQLite 数据库通过 volume 挂载到 ECS 的 `data/` 目录，容器重建后数据仍保留。
 - 对象存储：宠物头像上传到华为云 OBS 桶 `cloudhw2`，数据库保存 OBS 对象 URL。
 - 云函数：华为云 FunctionGraph 定时/手动触发每日护理摘要，执行结果写回 ECS 后端并在云架构页展示。
+- 消息队列：使用 SQLite 表 `message_queue` 模拟 Topic、消息入队和 Worker 消费，演示 DMS/RocketMQ 的异步解耦思想。
 - 密钥管理：LLM API Key、OBS AK/SK 都写入服务器 `.env`，不进入 GitHub 仓库。
 - 运行保障：Docker 容器配置 `restart unless-stopped`，服务器重启或容器异常退出后可自动恢复。
 
@@ -26,7 +27,7 @@
 | OBS | 存储宠物头像等非结构化文件 | 已真实接入 |
 | SQLite / RDS | 当前使用 SQLite，后续可迁移到 RDS | 当前 SQLite，RDS 为扩展 |
 | LLM API | 自然语言解析、推荐说明、健康总结 | 已接入 OpenAI 兼容接口 |
-| 消息队列 | 后续把 LLM 解析改为异步任务 | 架构扩展 |
+| 消息队列 | 模拟 DMS/RocketMQ 的入队和消费过程 | 本地模拟已实现 |
 | 云函数 | 定时生成每日护理摘要 | 已真实接入 FunctionGraph |
 
 ## 模型能力分析
@@ -40,6 +41,7 @@
 - 先展示多宠物档案，说明传统 CRUD 的基础能力。
 - 再展示聊天式输入，突出 LLM 把自然语言转为结构化业务数据。
 - 上传宠物头像后，在 OBS 控制台展示 `petcare-uploads/` 下新增对象。
+- 在云架构页点击“投递演示消息”，展示消息进入队列并被 Worker 消费。
 - 展示 Docker 容器运行状态，说明项目不是本地运行，而是在 ECS 云服务器上容器化部署。
 - 在 FunctionGraph 控制台手动测试云函数，然后回到系统“云架构”页查看执行摘要。
 - 最后展示云架构页，说明 ECS、对象存储、数据库、消息队列和云函数的作用。
@@ -51,4 +53,4 @@
 3. “头像这类非结构化文件没有继续放在服务器本地，而是接入华为云 OBS 对象存储。”
 4. “每日护理摘要由华为云 FunctionGraph 触发，云函数调用 ECS 后端接口生成摘要并写入数据库。”
 5. “密钥没有写进代码仓库，而是在云服务器 `.env` 和 FunctionGraph 环境变量中注入。”
-6. “目前消息队列作为扩展设计：后续可以把 LLM 解析任务放入队列，由异步 Worker 消费。”
+6. “消息队列部分当前用 SQLite 本地模拟 Topic 和 Worker，后续可以替换为华为云 DMS/RocketMQ。”

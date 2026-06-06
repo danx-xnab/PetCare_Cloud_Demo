@@ -18,6 +18,8 @@ services:
       OBS_SECRET_ACCESS_KEY: ${OBS_SECRET_ACCESS_KEY:-}
       OBS_PREFIX: ${OBS_PREFIX:-petcare-uploads}
       PETCARE_FUNCTION_TOKEN: ${PETCARE_FUNCTION_TOKEN:-}
+      PETCARE_QUEUE_MODE: ${PETCARE_QUEUE_MODE:-local-demo}
+      PETCARE_QUEUE_TOPIC: ${PETCARE_QUEUE_TOPIC:-petcare.record.events}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads

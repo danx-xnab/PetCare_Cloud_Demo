@@ -39,6 +39,7 @@
 | 对象存储 | 华为云 OBS 桶 `cloudhw2`，区域 `cn-north-4` |
 | 上传路径 | `petcare-uploads/` |
 | 云函数 | 华为云 FunctionGraph，触发每日护理摘要 |
+| 消息队列 | SQLite 本地模拟队列，展示 DMS/RocketMQ 异步链路 |
 | 密钥管理 | `.env` 环境变量注入，`.env` 不进入 GitHub |
 
 ## 云资源清单
@@ -52,7 +53,7 @@
 | 容器化 | Dockerfile 构建镜像，容器运行服务 | 可推送到 SWR 镜像仓库 |
 | HTTPS | 当前使用公网 IP 测试 | 后续接入 Nginx + Certbot 或云厂商 SSL 证书 |
 | CI/CD | 手动 `git pull` + `docker compose` | 后续可接 GitHub Actions |
-| 消息队列 | 当前同步调用 LLM | 后续将聊天记录写入队列，由 Worker 异步解析 |
+| 消息队列 | SQLite 本地队列表模拟 Topic、入队和消费 | 后续替换为 DMS/RocketMQ |
 | 云函数 | FunctionGraph 触发每日护理摘要 | 后续扩展为健康周报和异常通知 |
 
 ## 1. 准备 ECS
@@ -220,6 +221,29 @@ PETCARE_FUNCTION_TOKEN=和 ECS .env 中相同的 Token
 
 测试成功后，访问系统的“云架构”页面，可以看到 FunctionGraph 最近一次执行摘要。
 
+## 4.3 配置本地消息队列模拟
+
+当前 demo 不强制购买 DMS/RocketMQ，而是使用 SQLite 表 `message_queue` 模拟消息队列：
+
+```env
+PETCARE_QUEUE_MODE=local-demo
+PETCARE_QUEUE_TOPIC=petcare.record.events
+```
+
+每次用户通过智能助手提交记录后，后端会生成一条队列消息：
+
+```text
+chat record -> message_queue pending -> local worker consume -> done
+```
+
+云架构页面会展示：
+
+- Topic 名称
+- 待处理 / 处理中 / 已消费 / 失败数量
+- 最近消费的消息
+
+课堂演示时可以点击“投递演示消息”，也可以发送一条聊天记录后观察队列变化。后续如果接入华为云 DMS/RocketMQ，只需要把 `enqueue_message` 和 worker 消费逻辑替换为 RocketMQ Producer / Consumer。
+
 ## 5. 启动服务
 
 ### 方式 A：Docker Compose
@@ -359,9 +383,10 @@ docker compose up -d --build
 2. 容器通过 `--restart unless-stopped` 自动重启，提升演示稳定性。
 3. SQLite 数据通过 volume 挂载到 ECS，后续可平滑迁移到 RDS。
 4. 用户上传宠物头像后，后端将图片上传到华为云 OBS，数据库保存对象 URL。
-5. LLM API Key 和 OBS AK/SK 通过环境变量注入，不进入 GitHub，符合密钥安全要求。
-6. 当前同步调用 LLM，后续可扩展消息队列和异步 Worker，提升高并发下的稳定性。
-7. 后续可以加入 Nginx + HTTPS，保证公网访问安全，并解决浏览器麦克风权限限制。
+5. 聊天记录会写入本地消息队列表，模拟 DMS/RocketMQ 的 Topic、入队和 Worker 消费过程。
+6. LLM API Key 和 OBS AK/SK 通过环境变量注入，不进入 GitHub，符合密钥安全要求。
+7. 后续可以把本地队列表替换为华为云 DMS/RocketMQ，提升高并发下的稳定性。
+8. 后续可以加入 Nginx + HTTPS，保证公网访问安全，并解决浏览器麦克风权限限制。
 
 ## 10. 常见问题
 

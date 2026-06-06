@@ -172,6 +172,18 @@ def init_db() -> None:
               result TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS message_queue (
+              id TEXT PRIMARY KEY,
+              topic TEXT NOT NULL,
+              message_key TEXT NOT NULL,
+              payload TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempts INTEGER NOT NULL DEFAULT 0,
+              result TEXT,
+              created_at TEXT NOT NULL,
+              processed_at TEXT
+            );
             """
         )
         user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -295,6 +307,11 @@ def get_state() -> dict[str, Any]:
     reminders = rows("SELECT * FROM reminders ORDER BY status ASC, reminder_time ASC LIMIT 80")
     messages = rows("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT 40")
     cloud_runs = rows("SELECT * FROM cloud_function_runs ORDER BY created_at DESC LIMIT 8")
+    queue_events = rows("SELECT * FROM message_queue ORDER BY created_at DESC LIMIT 10")
+    queue_counts = {
+        item["status"]: item["count"]
+        for item in rows("SELECT status, COUNT(*) AS count FROM message_queue GROUP BY status")
+    }
     for message in messages:
         try:
             message["parsed_result"] = json.loads(message["parsed_result"])
@@ -305,6 +322,13 @@ def get_state() -> dict[str, Any]:
             run["result"] = json.loads(run["result"])
         except json.JSONDecodeError:
             pass
+    for event in queue_events:
+        for field in ("payload", "result"):
+            if event.get(field):
+                try:
+                    event[field] = json.loads(event[field])
+                except json.JSONDecodeError:
+                    pass
     today = datetime.now().date().isoformat()
     pending_today = [
         item
@@ -340,8 +364,20 @@ def get_state() -> dict[str, Any]:
             "database": "SQLite / RDS 云数据库",
             "object_storage": "本地存储 / OBS 对象存储",
             "llm": llm_desc,
-            "worker": "同步处理 / RocketMQ 异步就绪",
+            "queue": "本地消息队列 / DMS RocketMQ 就绪",
+            "worker": f"本地 Worker 已消费 {queue_counts.get('done', 0)} 条",
             "functiongraph": "FunctionGraph 每日护理摘要",
+        },
+        "message_queue": {
+            "mode": os.getenv("PETCARE_QUEUE_MODE", "local-demo"),
+            "topic": os.getenv("PETCARE_QUEUE_TOPIC", "petcare.record.events"),
+            "counts": {
+                "pending": queue_counts.get("pending", 0),
+                "processing": queue_counts.get("processing", 0),
+                "done": queue_counts.get("done", 0),
+                "failed": queue_counts.get("failed", 0),
+            },
+            "events": queue_events,
         },
         "cloud_function": {
             "configured": bool(os.getenv("PETCARE_FUNCTION_TOKEN", "").strip()),
@@ -676,6 +712,93 @@ def build_reply(parsed: dict[str, Any]) -> str:
     return f"已保存为{pet_name}的{type_label}。"
 
 
+def enqueue_message(topic: str, message_key: str, payload: dict[str, Any]) -> str:
+    queue_id = f"mq-{uuid.uuid4().hex[:10]}"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO message_queue
+            (id, topic, message_key, payload, status, attempts, result, created_at, processed_at)
+            VALUES (?, ?, ?, ?, 'pending', 0, '', ?, '')
+            """,
+            (queue_id, topic, message_key, json.dumps(payload, ensure_ascii=False), now_iso()),
+        )
+        conn.commit()
+    return queue_id
+
+
+def process_queue_message(queue_id: str) -> dict[str, Any]:
+    item = one("SELECT * FROM message_queue WHERE id = ?", (queue_id,))
+    if not item:
+        raise ValueError("队列消息不存在")
+    payload = {}
+    try:
+        payload = json.loads(item.get("payload") or "{}")
+    except json.JSONDecodeError:
+        payload = {"raw": item.get("payload", "")}
+
+    result = {
+        "worker": "local-sqlite-worker",
+        "action": "record-event-fanout",
+        "message_id": payload.get("message_id", ""),
+        "record_type": payload.get("record_type", ""),
+        "note": "本地 Worker 已消费该事件；云端可替换为 DMS/RocketMQ Consumer。",
+    }
+    processed_at = now_iso()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE message_queue
+            SET status = 'done', attempts = attempts + 1, result = ?, processed_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(result, ensure_ascii=False), processed_at, queue_id),
+        )
+        conn.commit()
+    return {"id": queue_id, "status": "done", "result": result, "processed_at": processed_at}
+
+
+def process_pending_queue(limit: int = 5) -> list[dict[str, Any]]:
+    pending = rows(
+        "SELECT id FROM message_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
+        (limit,),
+    )
+    return [process_queue_message(item["id"]) for item in pending]
+
+
+def enqueue_record_event(message_id: str, content: str, parsed: dict[str, Any]) -> str:
+    topic = os.getenv("PETCARE_QUEUE_TOPIC", "petcare.record.events")
+    payload = {
+        "message_id": message_id,
+        "pet_id": parsed.get("pet_id", ""),
+        "pet_name": parsed.get("pet_name", ""),
+        "record_type": parsed.get("record_type", ""),
+        "need_reminder": bool(parsed.get("need_reminder")),
+        "summary": parsed.get("summary", ""),
+        "raw_content": content,
+    }
+    queue_id = enqueue_message(topic, message_id, payload)
+    process_queue_message(queue_id)
+    return queue_id
+
+
+def create_demo_queue_event() -> dict[str, Any]:
+    topic = os.getenv("PETCARE_QUEUE_TOPIC", "petcare.record.events")
+    message_key = f"demo-{uuid.uuid4().hex[:8]}"
+    queue_id = enqueue_message(
+        topic,
+        message_key,
+        {
+            "message_id": message_key,
+            "pet_name": "演示消息",
+            "record_type": "demo",
+            "summary": "课堂演示：消息进入本地队列后由 Worker 消费。",
+        },
+    )
+    processed = process_queue_message(queue_id)
+    return {"event": processed, "state": get_state()}
+
+
 def create_chat_record(content: str, input_type: str = "text") -> dict[str, Any]:
     pets = rows("SELECT * FROM pets ORDER BY created_at ASC")
     parsed = parse_pet_record(content, pets)
@@ -737,7 +860,8 @@ def create_chat_record(content: str, input_type: str = "text") -> dict[str, Any]
                 ),
             )
         conn.commit()
-    return {"message_id": message_id, "parsed": parsed, "state": get_state()}
+    queue_id = enqueue_record_event(message_id, content, parsed)
+    return {"message_id": message_id, "queue_id": queue_id, "parsed": parsed, "state": get_state()}
 
 
 def create_pet(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1258,6 +1382,12 @@ class PetCareHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/reminders":
                 self.send_json(create_reminder(payload), 201)
+                return
+            if path == "/api/queue/demo":
+                self.send_json(create_demo_queue_event(), 201)
+                return
+            if path == "/api/queue/process":
+                self.send_json({"processed": process_pending_queue(), "state": get_state()}, 201)
                 return
             if path == "/api/cloud/function/daily-summary":
                 try:

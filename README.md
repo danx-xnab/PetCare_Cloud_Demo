@@ -13,6 +13,7 @@
 - 云架构展示：ECS、数据库、OBS、AI Worker、提醒任务的状态面板
 - 云端部署：已支持华为云 ECS + Docker 容器化运行，头像可选上传到华为云 OBS
 - 云函数：支持华为云 FunctionGraph 触发每日护理摘要，并在云架构页展示执行结果
+- 消息队列：内置 SQLite 本地队列模拟，用于演示 DMS/RocketMQ 的入队和 Worker 消费链路
 
 ## 本地运行
 
