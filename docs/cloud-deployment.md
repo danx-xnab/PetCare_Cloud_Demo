@@ -6,24 +6,53 @@
 
 ```text
 用户浏览器
-  -> 域名 / HTTPS
-  -> Nginx 反向代理
+  -> 公网 IP:8000 / 后续可升级为域名 HTTPS
   -> PetCare Cloud Docker 容器
-  -> SQLite 数据库文件 / 后续可替换 RDS
-  -> uploads 本地目录 / 后续可替换 OBS
+  -> SQLite 数据库文件
+  -> 华为云 OBS 对象存储
   -> OpenAI 兼容 LLM API
 ```
+
+后续生产化拓扑：
+
+```text
+用户浏览器
+  -> 域名 / HTTPS / Nginx 反向代理
+  -> PetCare Cloud Docker 容器
+  -> RDS 云数据库
+  -> OBS 对象存储
+  -> 消息队列 / 异步 Worker
+  -> 云函数 / 定时任务
+  -> OpenAI 兼容 LLM API
+```
+
+## 本次实际部署记录
+
+| 项目 | 实际配置 |
+| --- | --- |
+| 云服务器 | 华为云 ECS |
+| 系统 | Ubuntu 22.04 server 64bit |
+| 规格 | 2 vCPU / 2 GiB |
+| 访问方式 | 公网 IP + `8000` 端口 |
+| 运行方式 | Docker 容器 `petcare-cloud-demo` |
+| 数据库 | SQLite，挂载到 ECS 的 `/opt/PetCare_Cloud_Demo/data` |
+| 对象存储 | 华为云 OBS 桶 `cloudhw2`，区域 `cn-north-4` |
+| 上传路径 | `petcare-uploads/` |
+| 密钥管理 | `.env` 环境变量注入，`.env` 不进入 GitHub |
 
 ## 云资源清单
 
 | 云资源 | 当前部署方式 | 后续可扩展方式 |
 | --- | --- | --- |
-| ECS 云服务器 | 运行 Docker 容器和 Nginx | 横向扩容为多台 ECS |
+| ECS 云服务器 | 运行 Docker 容器 | 横向扩容为多台 ECS，并由负载均衡分发流量 |
 | 数据库 | SQLite，挂载到 `./data` | 替换为 RDS MySQL/PostgreSQL |
-| 对象存储 | 头像保存到 `./uploads` | 替换为 OBS/OSS/COS |
+| 对象存储 | 头像上传到华为云 OBS | 配置 CDN、生命周期规则和更细粒度权限 |
 | LLM 服务 | 通过环境变量配置 OpenAI 兼容 API | 可切换通义千问、智谱、DeepSeek 等兼容接口 |
-| HTTPS | Nginx + Certbot 证书 | 接入云厂商 SSL 证书服务 |
+| 容器化 | Dockerfile 构建镜像，容器运行服务 | 可推送到 SWR 镜像仓库 |
+| HTTPS | 当前使用公网 IP 测试 | 后续接入 Nginx + Certbot 或云厂商 SSL 证书 |
 | CI/CD | 手动 `git pull` + `docker compose` | 后续可接 GitHub Actions |
+| 消息队列 | 当前同步调用 LLM | 后续将聊天记录写入队列，由 Worker 异步解析 |
+| 云函数 | 当前后端同步生成提醒 | 后续用定时云函数生成健康周报和每日提醒 |
 
 ## 1. 准备 ECS
 
@@ -40,9 +69,15 @@
 
 ```bash
 sudo apt update
-sudo apt install -y git docker.io docker-compose-plugin nginx certbot python3-certbot-nginx
+sudo apt install -y git docker.io nginx certbot python3-certbot-nginx
 sudo systemctl enable --now docker
 sudo systemctl enable --now nginx
+```
+
+如果系统源中可以安装 Docker Compose 插件，也可以额外执行：
+
+```bash
+sudo apt install -y docker-compose-plugin
 ```
 
 如果当前用户没有 Docker 权限，可以执行：
@@ -65,6 +100,13 @@ cd PetCare_Cloud_Demo
 ```bash
 git pull origin main
 docker compose up -d --build
+```
+
+如果云服务器访问 GitHub 不稳定，可以先重试：
+
+```bash
+git config --global http.version HTTP/1.1
+git clone --depth 1 https://github.com/danx-xnab/PetCare_Cloud_Demo.git
 ```
 
 ## 4. 配置 LLM API Key
@@ -109,6 +151,8 @@ OBS_PREFIX=petcare-uploads
 
 ## 5. 启动服务
 
+### 方式 A：Docker Compose
+
 ```bash
 docker compose up -d --build
 ```
@@ -127,6 +171,41 @@ curl http://127.0.0.1:8000/api/state
 ```
 
 如果返回 JSON，说明后端已启动。
+
+### 方式 B：Docker 命令部署
+
+如果服务器没有 `docker compose` 插件，可以直接使用 Docker 命令：
+
+```bash
+docker build -t petcare-cloud-demo .
+
+docker rm -f petcare-cloud-demo 2>/dev/null || true
+
+docker run -d \
+  --name petcare-cloud-demo \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  --env-file /opt/PetCare_Cloud_Demo/.env \
+  -v /opt/PetCare_Cloud_Demo/data:/app/data \
+  -v /opt/PetCare_Cloud_Demo/uploads:/app/uploads \
+  petcare-cloud-demo
+```
+
+检查：
+
+```bash
+docker ps
+docker logs --tail 30 petcare-cloud-demo
+curl -I http://127.0.0.1:8000/
+```
+
+如果 Docker Hub 拉取 `python:3.11-slim` 超时，可以先用华为云镜像源拉取基础镜像并打本地标签：
+
+```bash
+docker pull swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim
+docker tag swr.cn-north-4.myhuaweicloud.com/ddn-k8s/docker.io/python:3.11-slim python:3.11-slim
+docker build -t petcare-cloud-demo .
+```
 
 ## 6. 配置 Nginx 反向代理
 
@@ -206,10 +285,12 @@ docker compose up -d --build
 可以这样介绍云计算部分：
 
 1. 项目通过 Docker 容器部署到 ECS，解决本地环境差异问题。
-2. Nginx 提供统一入口，并通过 HTTPS 保证浏览器语音输入和 API 调用安全。
-3. SQLite 数据和 uploads 文件通过 volume 持久化，后续可平滑迁移到 RDS 和对象存储。
-4. LLM API Key 通过环境变量注入，不进入 GitHub，符合密钥安全要求。
-5. 当前同步调用 LLM，后续可扩展消息队列和异步 Worker，提升高并发下的稳定性。
+2. 容器通过 `--restart unless-stopped` 自动重启，提升演示稳定性。
+3. SQLite 数据通过 volume 挂载到 ECS，后续可平滑迁移到 RDS。
+4. 用户上传宠物头像后，后端将图片上传到华为云 OBS，数据库保存对象 URL。
+5. LLM API Key 和 OBS AK/SK 通过环境变量注入，不进入 GitHub，符合密钥安全要求。
+6. 当前同步调用 LLM，后续可扩展消息队列和异步 Worker，提升高并发下的稳定性。
+7. 后续可以加入 Nginx + HTTPS，保证公网访问安全，并解决浏览器麦克风权限限制。
 
 ## 10. 常见问题
 

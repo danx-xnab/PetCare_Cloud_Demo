@@ -11,6 +11,7 @@
 - 提醒任务：自动生成观察、用药、疫苗或驱虫提醒
 - 养宠推荐：根据居住空间、预算、陪伴时间生成推荐结果
 - 云架构展示：ECS、数据库、OBS、AI Worker、提醒任务的状态面板
+- 云端部署：已支持华为云 ECS + Docker 容器化运行，头像可选上传到华为云 OBS
 
 ## 本地运行
 
@@ -24,7 +25,7 @@ python server.py --host 127.0.0.1 --port 8000
 http://127.0.0.1:8000
 ```
 
-如果本机没有 `python` 命令，可使用系统安装的 Python 3.10+。本 demo 不依赖第三方包。
+如果本机没有 `python` 命令，可使用系统安装的 Python 3.10+。不启用 OBS 时，本 demo 后端仅依赖 Python 标准库；启用 OBS 时需要安装 `requirements.txt` 中的华为云 OBS SDK。
 
 ## LLM 接入方式
 
@@ -60,7 +61,18 @@ $env:PETCARE_LLM_TEST_TIMEOUT="20"
 docker compose up --build
 ```
 
-部署到云服务器时，可将端口 `8000` 交给 Nginx 反向代理，并把 `uploads/` 替换为华为云 OBS 或 MinIO。
+部署到云服务器时，可将端口 `8000` 交给 Nginx 反向代理。当前项目已支持通过环境变量开启华为云 OBS：
+
+```env
+PETCARE_STORAGE=obs
+OBS_BUCKET=cloudhw2
+OBS_ENDPOINT=https://obs.cn-north-4.myhuaweicloud.com
+OBS_ACCESS_KEY_ID=你的 OBS AK
+OBS_SECRET_ACCESS_KEY=你的 OBS SK
+OBS_PREFIX=petcare-uploads
+```
+
+完整部署步骤见 `docs/cloud-deployment.md`。
 
 ## 演示路径
 
