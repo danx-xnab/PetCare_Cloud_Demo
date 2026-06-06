@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 
 ROOT = Path(__file__).resolve().parent
@@ -988,13 +988,56 @@ def save_upload(payload: dict[str, Any]) -> dict[str, Any]:
     raw = base64.b64decode(match.group("data"))
     target = UPLOAD_DIR / safe_name
     target.write_bytes(raw)
-    url = f"/uploads/{safe_name}"
+    url = upload_to_obs_if_configured(target, safe_name, mime) or f"/uploads/{safe_name}"
     pet_id = payload.get("pet_id")
     if pet_id:
         with connect() as conn:
             conn.execute("UPDATE pets SET avatar_url = ? WHERE id = ?", (url, pet_id))
             conn.commit()
     return {"url": url, "state": get_state()}
+
+
+def upload_to_obs_if_configured(local_path: Path, filename: str, mime: str) -> str | None:
+    storage = os.getenv("PETCARE_STORAGE", "local").strip().lower()
+    if storage not in {"obs", "huaweicloud-obs"}:
+        return None
+
+    bucket = os.getenv("OBS_BUCKET", "").strip()
+    endpoint = os.getenv("OBS_ENDPOINT", "https://obs.cn-north-4.myhuaweicloud.com").strip()
+    access_key = os.getenv("OBS_ACCESS_KEY_ID", "").strip()
+    secret_key = os.getenv("OBS_SECRET_ACCESS_KEY", "").strip()
+    prefix = os.getenv("OBS_PREFIX", "petcare-uploads").strip().strip("/")
+    if not all([bucket, endpoint, access_key, secret_key]):
+        raise ValueError("OBS 已启用，但 OBS_BUCKET / OBS_ENDPOINT / OBS_ACCESS_KEY_ID / OBS_SECRET_ACCESS_KEY 未配置完整")
+
+    try:
+        from obs import ObsClient, PutObjectHeader
+    except ImportError as exc:
+        raise RuntimeError("OBS SDK 未安装，请安装 esdk-obs-python 后重试") from exc
+
+    object_key = f"{prefix}/{filename}" if prefix else filename
+    headers = PutObjectHeader()
+    headers.contentType = mime
+    obs_client = ObsClient(access_key_id=access_key, secret_access_key=secret_key, server=endpoint)
+    try:
+        resp = obs_client.putFile(bucket, object_key, str(local_path), None, headers)
+        if resp.status >= 300:
+            error_code = getattr(resp, "errorCode", "")
+            error_message = getattr(resp, "errorMessage", "")
+            raise RuntimeError(f"OBS 上传失败：{resp.status} {error_code} {error_message}".strip())
+        object_url = getattr(getattr(resp, "body", None), "objectUrl", "") or build_obs_object_url(bucket, endpoint, object_key)
+        return object_url
+    finally:
+        close = getattr(obs_client, "close", None)
+        if callable(close):
+            close()
+
+
+def build_obs_object_url(bucket: str, endpoint: str, object_key: str) -> str:
+    parsed = urlparse(endpoint if "://" in endpoint else f"https://{endpoint}")
+    scheme = parsed.scheme or "https"
+    host = parsed.netloc or parsed.path
+    return f"{scheme}://{bucket}.{host}/{quote(object_key, safe='/')}"
 
 
 class PetCareHandler(SimpleHTTPRequestHandler):

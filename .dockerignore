@@ -1,5 +1,11 @@
 data/*.db
+data/*.db-journal
+data/*.db-shm
+data/*.db-wal
 uploads/*
 __pycache__/
 *.pyc
 .git/
+.env
+.env.*
+!.env.example

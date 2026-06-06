@@ -87,6 +87,26 @@ PETCARE_USE_SYSTEM_PROXY=
 
 如果使用其他 OpenAI 兼容接口，只需要替换 `OPENAI_BASE_URL` 和 `PETCARE_LLM_MODEL`。
 
+## 4.1 配置 OBS 对象存储
+
+头像默认保存到 ECS 本地 `uploads/` 目录。如果要接入华为云 OBS，在 `.env` 中增加：
+
+```env
+PETCARE_STORAGE=obs
+OBS_BUCKET=cloudhw2
+OBS_ENDPOINT=https://obs.cn-north-4.myhuaweicloud.com
+OBS_ACCESS_KEY_ID=你的 OBS AK
+OBS_SECRET_ACCESS_KEY=你的 OBS SK
+OBS_PREFIX=petcare-uploads
+```
+
+注意：
+
+- AK/SK 不要提交到 GitHub。
+- 当前桶如果设置为公开读，上传后的头像 URL 可以直接被浏览器访问。
+- 华北-北京四对应区域为 `cn-north-4`，Endpoint 为 `https://obs.cn-north-4.myhuaweicloud.com`。
+- 如果不想启用 OBS，把 `PETCARE_STORAGE` 改回 `local` 即可。
+
 ## 5. 启动服务
 
 ```bash
@@ -217,6 +237,8 @@ docker compose logs -f
 ### 上传头像后重启丢失吗
 
 不会。`uploads/` 已挂载到宿主机目录，只要不删除服务器上的项目目录，文件会保留。
+
+如果已配置 `PETCARE_STORAGE=obs`，新上传的头像会保存到 OBS 桶中，数据库保存的是 OBS 对象访问 URL。
 
 ### 可以换成云数据库吗
 

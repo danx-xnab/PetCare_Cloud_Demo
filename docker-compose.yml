@@ -11,6 +11,12 @@ services:
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       PETCARE_LLM_MODEL: ${PETCARE_LLM_MODEL:-gpt-4.1-mini}
       PETCARE_USE_SYSTEM_PROXY: ${PETCARE_USE_SYSTEM_PROXY:-}
+      PETCARE_STORAGE: ${PETCARE_STORAGE:-local}
+      OBS_BUCKET: ${OBS_BUCKET:-}
+      OBS_ENDPOINT: ${OBS_ENDPOINT:-https://obs.cn-north-4.myhuaweicloud.com}
+      OBS_ACCESS_KEY_ID: ${OBS_ACCESS_KEY_ID:-}
+      OBS_SECRET_ACCESS_KEY: ${OBS_SECRET_ACCESS_KEY:-}
+      OBS_PREFIX: ${OBS_PREFIX:-petcare-uploads}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
