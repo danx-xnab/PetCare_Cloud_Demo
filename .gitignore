@@ -8,3 +8,5 @@ uploads/*
 __pycache__/
 *.pyc
 .env
+outputs/
+scripts/generate_report_deck.mjs
